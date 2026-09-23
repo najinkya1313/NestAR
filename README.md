@@ -14,7 +14,7 @@
 
 NestAR combines **ARIMA models** with **Nested Sampling** for Bayesian model selection of astronomical time-series data.
 
-Rather than selecting the ARIMA order using only maximum-likelihood criteria such as AIC or BIC, NestAR evaluates the **Bayesian evidence** for candidate ARIMA$(p,d,q)$ models. The evidence naturally incorporates an Occam penalty, allowing increasingly complex models to be compared within a Bayesian framework.
+Rather than selecting the ARIMA order using only maximum-likelihood criteria such as AIC or BIC, NestAR evaluates the **Bayesian evidence** for candidate ARIMA(p,d,q) models. The evidence naturally incorporates an Occam penalty, allowing increasingly complex models to be compared within a Bayesian framework.
 
 For a selected model, NestAR also provides posterior samples and posterior-based time-series reconstruction and forecasting.
 
