@@ -67,7 +67,6 @@ def ARIMA_fast(data,order,sigma,mu, phi,theta,init_y,seed):
 
     return recovered
 
-
 def ARIMA_forecast(data, order, sigma, mu, phi, theta, forecast_num, init_y, seed):
     p, d, q = order
     y_model = ARIMA_fast(data, order, 0, mu, phi, theta, init_y, seed)  # sigma=0 for clean fit

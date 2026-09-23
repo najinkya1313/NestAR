@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nestar"
+version = "0.1.0"
+description = "Nested Sampling for ARIMA Model Selection in Astronomical Time-Series Analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    "jax",
+    "blackjax",
+    "anesthetic",
+    "tqdm",
+    "fgivenx",
+    "statsmodels",
+    "lightkurve",
+    "astropy",
+    "pmdarima"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

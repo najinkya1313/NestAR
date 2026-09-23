@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from blackjax.ns.utils import uniform_prior
 
 ##Normal prior distributions for the ARIMA model parameters. The code implements a constrained prior distribution to get stationary and invertible ARMA coefficient parameters.
 
@@ -40,9 +41,8 @@ def normal_prior(rng_key,num_live,prior_params,order):
    mean = norm_params['mean']
    scale = norm_params['scale']
    logprior += jax.scipy.stats.norm.logpdf(x, mean, scale)
-  output_phi = jnp.where(jnp.all(abs(roots_phi)>1) ,logprior,-jnp.inf)
-  output_ma = jnp.where(jnp.all(abs(roots_ma)>1),logprior,-jnp.inf)
-  output = output_phi + output_ma
+  valid = jnp.all(jnp.abs(roots_phi) > 1) & jnp.all(jnp.abs(roots_ma) > 1)
+  output = jnp.where(valid, logprior, -jnp.inf)
   
 ##For sigma and k:
   x_sig = params["sigma"]
@@ -111,6 +111,7 @@ def normal_prior(rng_key,num_live,prior_params,order):
        params.update({init_y_label:init_y_particle})
    
     return params
+  
   def invalid_point(roots):
     for phi_label,phi_particle in zip(phi_labels,phi_particles):
       params.update({phi_label:0.})
@@ -141,21 +142,90 @@ def normal_prior(rng_key,num_live,prior_params,order):
      unfiltered_particles.update({key:vals[mask]})
    
    return unfiltered_particles
- 
- particle_keys = jax.random.split(rng_key,num_live*1000)
+
+ batch_size = num_live*1000
+ particle_keys = jax.random.split(rng_key,batch_size)
  unfiltered_particles,unfilteredlogprior = jax.vmap(prior_sample)(particle_keys)
  particles = particles_filter(unfiltered_particles,unfilteredlogprior)
+ total_drawn = batch_size
+ total_accepted = len(particles['sigma'])
+ V = total_accepted/total_drawn
  
  ##------------------While loop to keep drawing samples until num_live reached --------------------------------
  while len(particles['sigma'])<num_live:
    rng_key,sample_key = jax.random.split(rng_key)
-   sample_particle_keys = jax.random.split(sample_key,num_live*1000)
+   sample_particle_keys = jax.random.split(sample_key,batch_size)
    new_particles,newlogprior = jax.vmap(prior_sample)(sample_particle_keys)
    new_particles_filtered = particles_filter(new_particles,newlogprior)
+   total_drawn += batch_size
+   total_accepted += len(new_particles_filtered['sigma'])
+   V = total_accepted/total_drawn
+   print(f"Acceptance rate: {V:.4f}, Total drawn: {total_drawn}")
    for key,vals in new_particles_filtered.items():
      new_arr = jnp.concatenate([particles[key],vals])
      particles.update({key:new_arr})
    
  particles = {label:value[:num_live] for label,value in particles.items()}
    
- return particles,logprior_fn
+ return particles,logprior_fn,V
+
+def prior_pacf_uniform(rng_key, num_live, prior_params, order):
+    """
+    Uniform(-1,1) prior on the PACF-parametrised ARMA coefficients
+    (alpha_ar_i, alpha_ma_j).
+    """
+    p, d, q = order
+
+
+    alpha_bounds = {}
+    for i in range(p):
+        alpha_bounds[f'alpha_ar_{i+1}'] = (-1.0, 1.0)
+    for j in range(q):
+        alpha_bounds[f'alpha_ma_{j+1}'] = (-1.0, 1.0)
+
+    rng_key, alpha_key = jax.random.split(rng_key)
+    alpha_particles, alpha_logprior_fn = uniform_prior(alpha_key, num_live, alpha_bounds)
+    
+
+    # ---- sigma, mu, D0: same as normal_prior.py ----
+    prior_params_sigma = prior_params['sigma']
+    mean_sigma, scale_sigma = prior_params_sigma['mean'], prior_params_sigma['scale']
+    prior_params_mu = prior_params['mu']
+    mu_mean, mu_scale = prior_params_mu['mean'], prior_params_mu['scale']
+    init_y_names = [f"init_y_{i+1}" for i in range(p)]
+    if p:
+        init_y_1 = prior_params['init_y_1']
+        init_y_mean, init_y_scale = init_y_1['mean'], init_y_1['scale']
+
+    def rest_logprior_fn(params):
+        logprior = jax.scipy.stats.truncnorm.logpdf(
+            params['sigma'], 1e-5, jnp.inf, mean_sigma, scale_sigma)
+        logprior += jax.scipy.stats.norm.logpdf(params['mu'], mu_mean, mu_scale)
+        for name in init_y_names:
+            logprior += jax.scipy.stats.norm.logpdf(params[name], init_y_mean, init_y_scale)
+        return logprior
+
+    def rest_prior_sample(rng_key):
+        params = {}
+        rng_key, sig_key, mu_key, init_key = jax.random.split(rng_key, 4)
+        params['sigma'] = scale_sigma * jax.random.truncated_normal(sig_key, 1e-5, jnp.inf) + mean_sigma
+        params['mu'] = mu_mean + mu_scale * jax.random.normal(mu_key)
+        if p:
+            init_keys = jax.random.split(init_key, p)
+            init_y_vals = init_y_scale * jnp.array(
+                [jax.random.normal(k) for k in init_keys]) + init_y_mean
+            for name, val in zip(init_y_names, init_y_vals):
+                params[name] = val
+        return params
+
+    rng_key, rest_key = jax.random.split(rng_key)
+    rest_keys = jax.random.split(rest_key, num_live)
+    rest_particles = jax.vmap(rest_prior_sample)(rest_keys)
+
+    # ---- merge alpha + rest into one particle dict / one logprior_fn ----
+    particles = {**alpha_particles, **rest_particles}
+
+    def logprior_fn(params):
+        return alpha_logprior_fn(params) + rest_logprior_fn(params)
+
+    return particles, logprior_fn
