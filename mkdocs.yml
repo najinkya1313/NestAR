@@ -6,8 +6,8 @@ site_url: !ENV READTHEDOCS_CANONICAL_URL
 
 theme:
   name: readthedocs
-  logo: assets/nestar_compact_logo.png 
-  favicon: assets/nestar_compact_logo.png
+  logo: assets/NestAR_compact_logo.png 
+  favicon: assets/NestAR_compact_logo.png
   features:
     - navigation.tabs
     - navigation.sections
