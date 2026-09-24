@@ -1,3 +1,20 @@
+"""Prior distributions for nested-sampling fits of ARIMA models.
+
+Provides two priors over the parameters of an ARMA(p, q) model with unknown
+noise scale ``sigma``, mean ``mu`` and initial values ``init_y``:
+
+- ``normal_prior``: independent Gaussian priors on the AR (``phi``) and MA
+  (``theta``) coefficients, restricted by rejection sampling to the region in
+  which the model is stationary and invertible.
+- ``prior_pacf_uniform``: Uniform(-1, 1) priors on the partial-autocorrelation
+  (PACF) parametrisation of the coefficients, which is stationary and
+  invertible by construction, so no rejection sampling is needed.
+
+Both return a dictionary of ``num_live`` initial particles together with a
+function that evaluates the log prior, for use with the ``blackjax`` nested
+sampler.
+"""
+
 import jax
 import jax.numpy as jnp
 from blackjax.ns.utils import uniform_prior
@@ -5,6 +22,68 @@ from blackjax.ns.utils import uniform_prior
 ##Normal prior distributions for the ARIMA model parameters. The code implements a constrained prior distribution to get stationary and invertible ARMA coefficient parameters.
 
 def normal_prior(rng_key,num_live,prior_params,order):
+ """Constrained Gaussian prior for the parameters of an ARMA model.
+
+ Draws ``num_live`` particles from independent Gaussian priors on the AR
+ coefficients ``phi_i`` and MA coefficients ``theta_j``, a truncated Gaussian
+ prior on the noise scale ``sigma``, and Gaussian priors on the mean ``mu`` and
+ the initial values ``init_y_i``. The particles are restricted, by rejection
+ sampling, to the region in which the ARMA process is stationary and
+ invertible, i.e. where all roots of the AR polynomial
+ ``1 - phi_1 z - ... - phi_p z^p`` and of the MA polynomial
+ ``1 + theta_1 z + ... + theta_q z^q`` lie outside the unit circle.
+
+ Parameters
+ ----------
+ rng_key : jax.Array
+     JAX PRNG key used to draw the particles.
+ num_live : int
+     Number of particles to return.
+ prior_params : dict
+     Mapping from parameter name to a dict with keys ``'mean'`` and
+     ``'scale'`` (the mean and standard deviation of that parameter's
+     Gaussian). It must contain entries for ``'phi_1'`` ... ``'phi_p'``,
+     ``'theta_1'`` ... ``'theta_q'``, ``'sigma'``, ``'mu'`` and, if ``p > 0``,
+     ``'init_y_1'`` ... ``'init_y_p'``.
+ order : tuple of int
+     ARIMA order ``(p, d, q)``. Only ``p`` and ``q`` are used.
+
+ Returns
+ -------
+ particles : dict of {str: jax.Array}
+     The ``num_live`` accepted particles. Each entry has shape
+     ``(num_live,)``, with keys ``phi_i``, ``theta_j``, ``sigma``, ``mu`` and
+     ``init_y_i``.
+ logprior_fn : callable
+     Function ``logprior_fn(params)`` that takes a dict of parameter values
+     (a single particle) and returns the scalar log prior density, which is
+     ``-inf`` outside the stationary and invertible region.
+ V : float
+     Acceptance rate of the rejection sampling: the fraction of all drawn
+     particles that lie in the stationary and invertible region.
+
+ Notes
+ -----
+ Particles are drawn in batches of ``1000 * num_live``. Further batches are
+ drawn, printing the running acceptance rate, until at least ``num_live``
+ particles have been accepted, and the first ``num_live`` are returned.
+
+ Inside the valid region, ``logprior_fn`` is the product of the unrestricted
+ densities; it is not renormalised over that region. The acceptance rate
+ ``V`` is an estimate of the prior mass of the region and can be used to
+ correct for this.
+
+ When drawing particles, all ARMA coefficients are sampled as zero-mean
+ Gaussians with the scale of the first coefficient, and all ``init_y_i`` with
+ the mean and scale of ``init_y_1``, whereas ``logprior_fn`` uses each
+ parameter's own mean and scale. For the particles to follow ``logprior_fn``,
+ the ARMA coefficients should therefore share a zero mean and a common scale,
+ and the ``init_y_i`` a common mean and scale.
+
+ The lower truncation bound ``1e-5`` of the ``sigma`` prior is applied in
+ standardised units (as in ``scipy.stats.truncnorm``), so the effective lower
+ bound on ``sigma`` is approximately its prior mean rather than zero.
+ """
  p,d,q = order
  phi_names = [f"phi_{i+1}" for i in range(p)]
  theta_names = [f"theta_{j+1}" for j in range(q)]
@@ -170,9 +249,50 @@ def normal_prior(rng_key,num_live,prior_params,order):
  return particles,logprior_fn,V
 
 def prior_pacf_uniform(rng_key, num_live, prior_params, order):
-    """
-    Uniform(-1,1) prior on the PACF-parametrised ARMA coefficients
-    (alpha_ar_i, alpha_ma_j).
+    """Uniform prior on the PACF-parametrised ARMA coefficients.
+
+    The AR and MA coefficients are parametrised by partial autocorrelations
+    ``alpha_ar_i`` (``i = 1, ..., p``) and ``alpha_ma_j`` (``j = 1, ..., q``),
+    each with a Uniform(-1, 1) prior. Every point in this box corresponds to a
+    stationary and invertible ARMA model, so no rejection sampling is needed. The
+    noise scale ``sigma``, the mean ``mu`` and the initial values ``init_y_i``
+    have the same priors as in ``normal_prior``.
+
+    Parameters
+    ----------
+    rng_key : jax.Array
+        JAX PRNG key used to draw the particles.
+    num_live : int
+        Number of particles to return.
+    prior_params : dict
+        Mapping from parameter name to a dict with keys ``'mean'`` and
+        ``'scale'``. Only the entries ``'sigma'``, ``'mu'`` and, if ``p > 0``,
+        ``'init_y_1'`` are read; all ``init_y_i`` share the mean and scale of
+        ``init_y_1``. Entries for the ARMA coefficients are not used, since those
+        have the uniform prior.
+    order : tuple of int
+        ARIMA order ``(p, d, q)``. Only ``p`` and ``q`` are used.
+
+    Returns
+    -------
+    particles : dict of {str: jax.Array}
+        The ``num_live`` particles. Each entry has shape ``(num_live,)``, with
+        keys ``alpha_ar_i``, ``alpha_ma_j``, ``sigma``, ``mu`` and ``init_y_i``.
+    logprior_fn : callable
+        Function ``logprior_fn(params)`` that takes a dict of parameter values
+        (a single particle) and returns the scalar log prior density.
+
+    Notes
+    -----
+    Unlike ``normal_prior``, this returns only ``(particles, logprior_fn)``, with
+    no acceptance rate, because there is no rejection sampling.
+
+    The coefficient particles and their log prior come from
+    ``blackjax.ns.utils.uniform_prior``.
+
+    The lower truncation bound ``1e-5`` of the ``sigma`` prior is applied in
+    standardised units (as in ``scipy.stats.truncnorm``), so the effective lower
+    bound on ``sigma`` is approximately its prior mean rather than zero.
     """
     p, d, q = order
 
