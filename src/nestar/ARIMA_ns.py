@@ -35,14 +35,14 @@ def pacf_to_arma(alpha):
 
 def loglikelihood(data, order, seed, meas_sigma=None, custom=False, custom_llk=None):
     """
-    Loglikelihood function for ARIMA models.
+    A multivariate Gaussian loglikelihood function for ARIMA models.
 
-    meas_sigma : per-point measurement-uncertainty array (same length as
-        data), or None to reproduce the old homoscedastic likelihood.
+    data:the time series data
+
+    meas_sigma : per-point measurement-uncertainty array or None to 
+        reproduce the old homoscedastic likelihood.
         Combined in quadrature with the free process-noise parameter sigma:
-        sigma_t^2 = meas_sigma_t^2 + sigma^2 (reviewer item 9). For datasets
-        without known per-point uncertainties (sunspots, simulated series),
-        leave this as None -- the likelihood is then identical to before.
+        sigma_t^2 = meas_sigma_t^2 + sigma^2.
     """
     p, d, q = order
     phi_keys = [f'phi_{i+1}' for i in range(p)]
