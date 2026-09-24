@@ -1,14 +1,15 @@
-"""
-arima_model_comparison.py
+"""ARIMA model comparison by nested sampling.
 
-ARIMAModelComparison: runs a grid of ARIMA(p, d, q) nested-sampling fits and
-exposes the results (evidences, errors, log posteriors, acceptance rate V,
-max log-likelihood, BIC, D0 Occam factor, net prior-volume effect) as plain
-attributes on the instance.
+Provides ``ARIMA_model_comparison``, which runs a grid of ARIMA(p, d, q)
+nested-sampling fits and exposes the results (evidences and their errors, log
+posteriors, rejection-sampling acceptance rate ``V``, maximum log-likelihood,
+BIC, D0 Occam factor and net prior-volume effect) as plain attributes on the
+instance. Also provides ``stationarity_test`` (ADF and KPSS tests) and
+``compute_d0_occam_factor``.
 
-This module owns the *sampling* logic and depends on jax / ARIMA_ns /
-ARIMA_fast. See arima_results.py if you just want to load
-and plot a results file that was produced by a run elsewhere.
+This module owns the *sampling* logic and depends on ``jax``, ``ARIMA_ns``
+and ``ARIMA_fast``. To only load and plot a results file produced by a run
+elsewhere, use the sampler-free ``arima_results`` module instead.
 """
 
 import os
@@ -29,6 +30,29 @@ from .ARIMA_ns import (
 
 ##Stationarity test
 def stationarity_test(timeseries):
+            """Run ADF and KPSS stationarity tests on a time series and print the results.
+
+            Runs the augmented Dickey-Fuller (ADF) test, with the lag length chosen by
+            AIC, and the KPSS test with a constant regression and automatic lag
+            selection. For each test the statistic, p-value, lags used and critical
+            values are printed, followed by a one-line verdict at the 5% level.
+
+            Parameters
+            ----------
+            timeseries : array-like
+                One-dimensional time series to test.
+
+            Returns
+            -------
+            tuple of None
+                ``(None, None)``: both tests print their output rather than returning it.
+
+            Notes
+            -----
+            The two tests have opposite null hypotheses. For ADF the null is a unit root
+            (non-stationarity), so ``p < 0.05`` indicates a stationary series. For KPSS
+            the null is stationarity, so ``p < 0.05`` indicates a non-stationary series.
+            """
 
             def adf_test(timeseries):
                 print("Results of Dickey-Fuller Test:")
@@ -72,23 +96,42 @@ def stationarity_test(timeseries):
 
 
 def compute_d0_occam_factor(posterior_samples, order, tau):
-    """
-    Approximate per-parameter Occam-factor contribution of the D0 (init_y)
-    block: log(sigma_post / tau) for each init_y_i, using its posterior std
-    against its prior scale tau. tau must equal the actual prior scale used
-    for init_y in prior_parameters() -- currently that's mu_scale for both
-    prior_type='normal' and 'pacf' (init_y_scale = mu_scale there), so
-    callers should pass self.mu_scale.
+    """Approximate the Occam-factor contribution of the initial-value (D0) block.
 
-    Same family of approximation as the D_KL already reported in Fig. 8:
-    posterior much narrower than prior => strongly negative (real penalty);
-    posterior ~= prior width => near zero (parameter along for the ride).
-    This is an approximate, per-parameter diagnostic (assumes near-Gaussian
-    marginals, treated independently of phi/theta/sigma/mu) -- not an exact
-    evidence decomposition. Present it as such.
+    For each initial-value parameter ``init_y_i`` (``i = 1, ..., p``) this
+    computes ``log(sigma_post / tau)``, the log of the ratio of its posterior
+    standard deviation to its prior scale. A posterior much narrower than the
+    prior gives a strongly negative value (a genuine Occam penalty); a posterior
+    about as wide as the prior gives a value near zero (the parameter is
+    essentially unconstrained by the data).
 
-    Returns (total, per_param) where per_param is a dict {init_y_i: contrib}.
-    Returns (0.0, {}) for p=0, since there are no D0 parameters to penalize.
+    Parameters
+    ----------
+    posterior_samples : pandas.DataFrame-like
+        Posterior samples with columns ``init_y_1`` ... ``init_y_p``.
+    order : tuple of int
+        ARIMA order ``(p, d, q)``.
+    tau : float
+        Prior scale of the ``init_y`` parameters. It must equal the scale
+        actually used for ``init_y`` in ``prior_parameters()``, which is currently
+        ``mu_scale`` for both the ``'normal'`` and ``'pacf'`` priors, so callers
+        should pass ``mu_scale``.
+
+    Returns
+    -------
+    total : float
+        Sum of the per-parameter contributions; 0.0 if ``p == 0``.
+    per_param : dict of {str: float}
+        Contribution of each parameter, keyed ``'init_y_1'``, ``'init_y_2'``,
+        ...; empty if ``p == 0``, since there are then no D0 parameters to
+        penalise.
+
+    Notes
+    -----
+    This is an approximate, per-parameter diagnostic. It assumes near-Gaussian
+    marginals and treats the ``init_y`` parameters as independent of each other
+    and of ``phi``, ``theta``, ``sigma`` and ``mu``. It is not an exact
+    decomposition of the evidence.
     """
     p, d, q = order
     if p == 0:
@@ -108,35 +151,121 @@ def compute_d0_occam_factor(posterior_samples, order, tau):
 class ARIMA_model_comparison:
     """Grid search over ARIMA(p, d, q) models via nested sampling.
 
-    Call `.run()` once to perform the grid search;
+    Fits every model ``(p, d, q)`` with ``0 <= p <= max_p`` and ``0 <= q <= max_q``
+    at a fixed differencing order ``d`` (excluding the trivial ``(0, d, 0)``
+    model) using ``ARIMA_Nested_Sampler``, and stores the per-model results as
+    plain attributes. Call ``run`` once to perform the grid search, or
+    ``load_evidence_file`` to load the results of an earlier run without
+    resampling. The results can then be plotted with ``plot_evidence_heatmap`` and
+    ``compare`` and summarised with ``prior_volume_report``.
+
+    Parameters
+    ----------
+    data : array-like
+        One-dimensional time series to analyse.
+    max_p : int
+        Maximum AR order of the grid.
+    max_q : int
+        Maximum MA order of the grid.
+    d : int
+        Differencing order shared by every model in the grid.
+    num_live : int
+        Number of live points used by the nested sampler.
+    num_delete : int
+        Number of points deleted at each nested-sampling iteration.
+    seed : int
+        Base random seed. The model at position ``k`` in the grid is sampled with
+        seed ``seed + k``.
+    prior_type : {'normal', 'pacf', 'uniform'}, default 'normal'
+        Prior on the ARMA coefficients, passed to the sampler. Any value other
+        than ``'pacf'`` or ``'uniform'`` is treated as ``'normal'``.
+    mu_mean : float, default 0
+        Prior mean of the long-term mean of the data.
+    mu_scale : float, default 1
+        Prior scale of the long-term mean of the data. It doubles as ``tau``, the
+        prior scale of the D0 (``init_y``) parameters; see
+        ``compute_d0_occam_factor``.
+    prior_scale : float, default 1
+        Prior scale of the AR and MA coefficients (``phi``, ``theta``).
+    inner_steps_factor : int, default 6
+        Factor setting the number of inner steps taken by the sampler at each
+        nested-sampling iteration; passed to ``ARIMA_Nested_Sampler``.
+    file_name : str, optional
+        Path of an evidence file. If given, the file is started afresh (with a
+        warning first if it already exists) and, during ``run``, is written to in
+        real time as each model finishes, so that an interrupted run does not lose
+        its progress. Once the whole grid is done, a final set of columns
+        (normalised posterior, BIC, D0 Occam factor and net prior-volume effect)
+        is written; see ``run``.
+    prior_bounds : dict, optional
+        Prior bounds passed through to ``ARIMA_Nested_Sampler``. An empty
+        dictionary is used if None.
+    include_mean_param, include_scale_param : bool, default True
+        Whether the parameter count used in the BIC,
+        ``k = p + q + (1 if mean) + (1 if scale)``, includes a mean parameter
+        and/or a noise-scale parameter. Check that this matches what
+        ``ARIMA_Nested_Sampler`` actually fits; see ``num_arima_params`` in
+        ``arima_results``.
+    meas_sigma : array-like or float, optional
+        Measurement uncertainties of the data, passed through to
+        ``ARIMA_Nested_Sampler``.
+
+    Attributes
+    ----------
+    orders : list of tuple of int
+        ARIMA orders ``(p, d, q)`` of the models in the grid, ordered by ``p``
+        and then by ``q``. Each of the following per-model attributes is ordered
+        like ``orders``. All of them are None until populated by ``run`` or
+        ``load_evidence_file``.
+    evidences : numpy.ndarray
+        Log evidence of each model.
+    evidence_err : numpy.ndarray
+        Uncertainty on each log evidence.
+    log_posteriors : numpy.ndarray
+        Log posterior probability of each model, normalised over the grid.
+    V : numpy.ndarray
+        Acceptance rate of the rejection sampling that restricts the prior for
+        each model. It is 1.0 for ``prior_type='pacf'`` (no rejection is needed)
+        and NaN for ``prior_type='uniform'`` (no restriction is applied).
+    max_loglikelihood : numpy.ndarray
+        Maximum log-likelihood found for each model.
+    BIC : numpy.ndarray
+        Bayesian information criterion of each model.
+    d0_occam : numpy.ndarray
+        Total D0 Occam factor of each model; see ``compute_d0_occam_factor``.
+    d0_per_param : list of dict or None
+        Per-parameter D0 Occam contributions of each model. Only available on a
+        live object straight after ``run``; None after ``load_evidence_file``.
+    log_V_boost : numpy.ndarray
+        Log prior-volume boost of each model, derived from the acceptance rate
+        ``V``.
+    net_prior_volume_effect : numpy.ndarray
+        Net prior-volume effect of each model: ``log_V_boost + d0_occam``.
+
+    Notes
+    -----
+    If ``file_name`` is given, the file is emptied when the instance is
+    constructed, and again at the start of ``run``, with a warning if it already
+    exists. To read an existing evidence file without wiping it, construct the
+    instance without ``file_name`` and pass the path to ``load_evidence_file``
+    instead.
+
+    Examples
+    --------
+    >>> comp = ARIMA_model_comparison(data, max_p=3, max_q=3, d=0,
+    ...                               num_live=500, num_delete=100, seed=0,
+    ...                               file_name="evidence.txt")
+    >>> comp.run()
+    >>> fig = comp.plot_evidence_heatmap("log_posteriors")
     """
 
     def __init__(self, data, max_p, max_q, d, num_live, num_delete, seed,
                  prior_type="normal", mu_mean=0, mu_scale=1, prior_scale=1,
                  inner_steps_factor=6, file_name=None, prior_bounds=None,
                  include_mean_param=True, include_scale_param=True,meas_sigma=None):
-        """
-        data : time series data to be analyzed
-        max_p : max AR order of the grid
-        max_q : max MA order of the grid
-        d : differencing order d of the ARIMA model
-        num_live : number of live points to be used
-        num_delete : number of points to delete at each iteration
-        seed : random seed
-        mu_mean, mu_scale : prior mean/scale of the long term mean of data.
-            mu_scale doubles as tau, the D0 (init_y) prior scale -- see
-            compute_d0_occam_factor.
-        prior_scale : prior scale for the AR and MA coefficients (phi, theta)
-        file_name : if given, each call to `.run()` starts this file fresh
-            (warns first if it already exists, so you don't silently
-            overwrite a previous run) and then writes to it in real time as
-            each model finishes, so a crash mid-run doesn't lose progress.
-            A final normalized-posterior/BIC/D0/net-prior-volume column set
-            is added once the whole grid is done -- see `.run()`.
-        include_mean_param, include_scale_param : whether the BIC parameter
-            count k = p + q + (1 if mean) + (1 if scale) should include a
-            mean and/or noise-scale parameter. Check this matches what
-            ARIMA_Nested_Sampler actually fits -- see num_arima_params().
+        """Store the configuration and, if ``file_name`` is given, start a fresh file.
+
+        See the class docstring for a description of the parameters.
         """
         self.data = data
         self.max_p = max_p
@@ -186,19 +315,43 @@ class ARIMA_model_comparison:
     # ------------------------------------------------------------------ #
 
     def run(self):
-        """Run the ARIMA(p, d, q) grid search and populate self.* attributes.
+        """Run the ARIMA(p, d, q) grid search and populate the result attributes.
 
-        Writes to self.file_name (if set) in two stages:
-          1. In real time, one line per model as soon as it finishes
-             (Order, Seed, Evidence, Error, V, MaxLogL, BIC, D0Occam,
-             NetPriorVolume) -- protects against losing progress if the run
-             is interrupted. NetPriorVolume can be written per-line (unlike
-             Posterior) because it only depends on that single model's V and
-             D0Occam, not on the whole grid's evidences.
-          2. Once the *entire* grid is done, the file is rewritten with a
-             Posterior= column added to every line. This can only happen at
-             the end because the normalized posterior of any one model
-             depends on the evidences of every other model in the grid.
+        Each model in the grid is fitted by nested sampling, and its log evidence,
+        evidence error, acceptance rate ``V``, maximum log-likelihood, BIC and D0
+        Occam factor are recorded. Progress is printed after each model. When all
+        models are done, the log posteriors are normalised over the grid (and checked
+        to sum to one) and the prior-volume quantities are derived.
+
+        If ``self.file_name`` is set, the file is written in two stages:
+
+        1. In real time, one line per model as soon as it finishes, with the fields
+           ``Order``, ``Seed``, ``Evidence``, ``Error``, ``V``, ``MaxLogL``, ``BIC``,
+           ``D0Occam`` and ``NetPriorVolume``. This protects against losing progress
+           if the run is interrupted. ``NetPriorVolume`` can be written per line
+           (unlike ``Posterior``) because it depends only on that model's own ``V``
+           and D0 Occam factor, not on the evidences of the whole grid.
+        2. Once the entire grid is done, the file is rewritten with a ``Posterior``
+           field (the normalised log posterior) added to every line. This can only
+           happen at the end because the posterior of any one model depends on the
+           evidences of every other model in the grid.
+
+        Returns
+        -------
+        ARIMA_model_comparison
+            This instance, to allow chaining.
+
+        Notes
+        -----
+        The file, if set, is emptied at the start of the run, so any earlier contents
+        are lost.
+
+        The ``Seed`` field written to the file is always the base seed ``self.seed``,
+        not the seed actually used for that model (``self.seed`` plus the model's
+        position in the grid).
+
+        For ``prior_type='uniform'`` no acceptance rate ``V`` is available, so the
+        prior-volume quantities of each model are not defined.
         """
         evidences, evidence_err, V, max_loglikelihood, BIC = [], [], [], [], []
         d0_occam, d0_per_param = [], []
@@ -317,15 +470,35 @@ class ARIMA_model_comparison:
     # ------------------------------------------------------------------ #
 
     def load_evidence_file(self, file_name=None, check_normalization=True):
-        """Load a previously-saved evidence file into this instance's
-        attributes (self.orders, self.evidences, ... self.net_prior_volume_effect),
-        without re-running the sampler. Equivalent to calling
-        arima_results.load_evidence_file() directly and unpacking the dict.
+        """Load a saved evidence file into this instance without re-running the sampler.
 
-        Note: self.d0_per_param is set to None here -- per-parameter D0
-        detail is not persisted to the text file, only the per-model total
-        (self.d0_occam). It's only available on a live object right after
-        .run().
+        Equivalent to calling ``arima_results.load_evidence_file`` directly and
+        unpacking the returned dictionary into this instance's attributes.
+
+        Parameters
+        ----------
+        file_name : str, optional
+            Path of the evidence file. If given, it replaces ``self.file_name``; if
+            None, ``self.file_name`` is used.
+        check_normalization : bool, default True
+            Passed to ``arima_results.load_evidence_file``; if True, the loaded model
+            posterior probabilities are checked for normalisation.
+
+        Returns
+        -------
+        ARIMA_model_comparison
+            This instance, to allow chaining.
+
+        Raises
+        ------
+        ValueError
+            If no ``file_name`` is given and none was set on the instance.
+
+        Notes
+        -----
+        ``d0_per_param`` is set to None: the per-parameter D0 detail is not stored in
+        the text file, only the per-model total (``d0_occam``). It is only available
+        on a live object straight after ``run``.
         """
         file_name = file_name or self.file_name
         if file_name is None:
@@ -347,7 +520,29 @@ class ARIMA_model_comparison:
         return self
 
     def _quantity(self, name):
-        """Map a quantity name to a (values, errors) tuple for plotting."""
+        """Look up a stored quantity by name for plotting.
+
+        Parameters
+        ----------
+        name : str
+            One of ``'log_posteriors'``, ``'evidences'``, ``'BIC'``, ``'V'``,
+            ``'max_loglikelihood'``, ``'d0_occam'``, ``'log_V_boost'`` or
+            ``'net_prior_volume_effect'``.
+
+        Returns
+        -------
+        values : numpy.ndarray
+            The per-model values.
+        errors : numpy.ndarray or None
+            ``evidence_err`` for ``'log_posteriors'`` and ``'evidences'``; None for
+            all other quantities.
+
+        Raises
+        ------
+        ValueError
+            If ``name`` is unknown, or if the requested quantity has not been
+            populated (call ``run`` or ``load_evidence_file`` first).
+        """
         table = {
             "log_posteriors": (self.log_posteriors, self.evidence_err),
             "evidences": (self.evidences, self.evidence_err),
@@ -366,9 +561,28 @@ class ARIMA_model_comparison:
         return values, errors
 
     def plot_evidence_heatmap(self, quantity="log_posteriors", **kwargs):
-        """Ordinary single heatmap of one quantity ('log_posteriors', 'BIC',
-        'V', 'evidences', 'max_loglikelihood', 'd0_occam', 'log_V_boost', or
-        'net_prior_volume_effect') over the (p, q) grid.
+        """Plot a single heatmap of one quantity over the ``(p, q)`` grid.
+
+        Parameters
+        ----------
+        quantity : str, default "log_posteriors"
+            Name of the quantity to plot: ``'log_posteriors'``, ``'BIC'``, ``'V'``,
+            ``'evidences'``, ``'max_loglikelihood'``, ``'d0_occam'``,
+            ``'log_V_boost'`` or ``'net_prior_volume_effect'``.
+        **kwargs
+            Forwarded to ``arima_results.plot_evidence_heatmap``. ``invert`` defaults
+            to True only for ``'BIC'`` (lower is better), and ``title`` and
+            ``cbar_label`` default to the quantity name.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The figure containing the heatmap.
+
+        Raises
+        ------
+        ValueError
+            If ``quantity`` is unknown or has not been populated.
         """
         data = self._quantity(quantity)
         kwargs.setdefault("invert", quantity == "BIC")  # lower BIC is better
@@ -378,12 +592,42 @@ class ARIMA_model_comparison:
                                          orders=self.orders, **kwargs)
 
     def compare(self, quantity1="log_posteriors", quantity2=None, labels=None, **kwargs):
-        """Compare two quantities side by side, e.g.
-            comp.compare("log_posteriors", "BIC")
-            comp.compare("log_posteriors", "V")
-            comp.compare("log_posteriors", "net_prior_volume_effect")
-        If quantity2 is None, this just falls back to the ordinary single
-        heatmap of quantity1 (same as plot_evidence_heatmap).
+        """Compare two quantities side by side on the ``(p, q)`` grid.
+
+        If ``quantity2`` is None this falls back to the ordinary single heatmap of
+        ``quantity1`` (same as ``plot_evidence_heatmap``).
+
+        Parameters
+        ----------
+        quantity1 : str, default "log_posteriors"
+            Name of the quantity for the left panel; see ``plot_evidence_heatmap``
+            for the available names.
+        quantity2 : str, optional
+            Name of the quantity for the right panel. If None, only ``quantity1`` is
+            plotted.
+        labels : tuple of str, optional
+            Panel titles and colourbar labels. Defaults to the two quantity names.
+        **kwargs
+            Forwarded to ``arima_results.plot_comparison_heatmap`` (or to
+            ``plot_evidence_heatmap`` when ``quantity2`` is None). ``invert`` may be
+            given as a per-panel tuple and defaults to True for any panel showing
+            ``'BIC'``.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The comparison figure.
+
+        Raises
+        ------
+        ValueError
+            If either quantity is unknown or has not been populated.
+
+        Examples
+        --------
+        >>> comp.compare("log_posteriors", "BIC")
+        >>> comp.compare("log_posteriors", "V")
+        >>> comp.compare("log_posteriors", "net_prior_volume_effect")
         """
         if quantity2 is None:
             return self.plot_evidence_heatmap(quantity1, **kwargs)
@@ -401,20 +645,48 @@ class ARIMA_model_comparison:
     # ------------------------------------------------------------------ #
 
     def prior_volume_report(self, order_of_interest, baseline_order):
-        """Answers reviewer item 3c directly: how much of the raw log
-        posterior difference between two orders is prior-volume bookkeeping
-        (the rejection-sampling renormalisation minus the D0 Occam penalty),
-        versus likelihood-driven signal.
+        """Split a log-posterior difference into prior-volume and likelihood parts.
 
-        Example (sunspot grid, item 3c's exact question):
-            comp.prior_volume_report(order_of_interest=(9, 0, 1),
-                                      baseline_order=(0, 0, 1))
+        Quantifies how much of the raw log-posterior difference between two models is
+        prior-volume bookkeeping (``net_prior_volume_effect``: the rejection-sampling
+        renormalisation, ``log_V_boost``, plus the D0 Occam term, ``d0_occam``, which
+        is a penalty when negative) and how much is likelihood-driven signal.
 
-        Returns a dict with the raw log-posterior delta, the net
-        prior-volume-effect delta, and the "likelihood-only" delta obtained
-        by subtracting the latter from the former -- i.e. what's left once
-        prior-volume bookkeeping is backed out. Also reports what fraction
-        of the raw delta the prior-volume term accounts for.
+        Parameters
+        ----------
+        order_of_interest : tuple of int
+            ARIMA order ``(p, d, q)`` of the model being assessed.
+        baseline_order : tuple of int
+            ARIMA order ``(p, d, q)`` of the model it is compared against.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys. Each "delta" is the value for
+            ``order_of_interest`` minus the value for ``baseline_order``.
+
+            - ``'order_of_interest'``, ``'baseline_order'`` : the two orders.
+            - ``'raw_log_posterior_delta'`` : delta in ``log_posteriors``.
+            - ``'log_V_boost_delta'`` : delta in ``log_V_boost``.
+            - ``'d0_occam_delta'`` : delta in ``d0_occam``.
+            - ``'net_prior_volume_delta'`` : delta in ``net_prior_volume_effect``.
+            - ``'likelihood_only_delta'`` : the raw delta minus the net prior-volume
+              delta, i.e. what is left once the prior-volume bookkeeping is backed
+              out.
+            - ``'fraction_of_raw_delta_from_prior_volume'`` : net prior-volume delta
+              divided by the raw delta (NaN if the raw delta is zero).
+
+        Raises
+        ------
+        ValueError
+            If either order is not present in ``self.orders``.
+
+        Examples
+        --------
+        To compare ARIMA(9, 0, 1) against ARIMA(0, 0, 1):
+
+        >>> comp.prior_volume_report(order_of_interest=(9, 0, 1),
+        ...                          baseline_order=(0, 0, 1))
         """
         i = self.orders.index(order_of_interest)
         j = self.orders.index(baseline_order)
