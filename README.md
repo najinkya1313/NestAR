@@ -48,7 +48,7 @@ from nestar.ARIMA_ns import ARIMA_Nested_Sampler
 
 model = ARIMA_Nested_Sampler(
     data=your_time_series,
-    order=(2, 0, 1),
+    order=(1, 0, 1),
     mu_mean=0,
     mu_scale=1,
     num_live=500,
@@ -58,29 +58,8 @@ model = ARIMA_Nested_Sampler(
 
 model.summary()
 
-y_fit = model.get_mean_forecasts()
-
-model.mean_fit_plot(compare=True)
 ```
 
-NestAR can also compare a grid of ARIMA models:
-
-```python
-from nestar.model_comparison_utils import ARIMA_model_comparison
-
-results = ARIMA_model_comparison(
-    data=your_time_series,
-    max_p=5,
-    max_q=5,
-    d=0,
-    num_live=500,
-    num_delete=50,
-    seed=42,
-    mu_mean=0,
-    mu_scale=1,
-    file_name="results.txt",
-)
-```
 
 ## Documentation
 
