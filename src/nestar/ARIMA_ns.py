@@ -76,14 +76,12 @@ def loglikelihood(data, order, seed, meas_sigma=None, custom=False, custom_llk=N
     meas_sigma : array-like, optional
         Per-observation measurement uncertainties. If provided, the
         total variance is computed as
-
-        ``sigma_t^2 = meas_sigma_t^2 + sigma^2``,
-
-        where ``sigma`` is the fitted process-noise parameter.
-        If None, a homoscedastic likelihood is used.
+        ``sigma_t^2 = meas_sigma_t^2 + sigma^2``, where ``sigma`` is
+        the fitted process-noise parameter. If ``None``, a
+        homoscedastic likelihood is used.
     custom : bool, optional
-        If True, return ``custom_llk`` instead of constructing the
-        default Gaussian likelihood. Default is False.
+        If ``True``, return ``custom_llk`` instead of constructing the
+        default Gaussian likelihood. Defaults to ``False``.
     custom_llk : callable, optional
         User-supplied log-likelihood function. Required when
         ``custom=True``.
