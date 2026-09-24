@@ -2,7 +2,8 @@ site_name: NestAR
 site_description: Bayesian ARIMA model selection for astronomical time-series analysis using Nested Sampling
 site_url: !ENV READTHEDOCS_CANONICAL_URL
 
-
+extra_css:
+  - stylesheets/extra.css
 
 theme:
   name: readthedocs
