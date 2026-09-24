@@ -14,9 +14,30 @@ from .priors import normal_prior, prior_pacf_uniform
 
 
 def pacf_to_arma(alpha):
-    """Durbin-Levinson recursion (Barndorff-Nielsen & Schou 1973).
-    Maps alpha in (-1,1)^k to AR-style coefficients with all roots
-    guaranteed outside the unit circle, for any alpha in the open box."""
+    """
+    Convert partial autocorrelation coefficients to AR coefficients.
+
+    Uses the Durbin--Levinson recursion of Barndorff-Nielsen and
+    Schou (1973) to transform a vector of partial autocorrelation
+    coefficients into autoregressive coefficients.
+
+    Parameters
+    ----------
+    alpha : jax.Array
+        One-dimensional array of partial autocorrelation coefficients,
+        with values in the interval ``(-1, 1)``.
+
+    Returns
+    -------
+    jax.Array
+        One-dimensional array of autoregressive coefficients obtained
+        from the supplied partial autocorrelations.
+
+    Notes
+    -----
+    For parameters in the open interval ``(-1, 1)``, the resulting
+    autoregressive coefficients satisfy the stationarity constraint.
+    """
     k = alpha.shape[0]
     if k == 0:
         return jnp.array([])
@@ -35,19 +56,44 @@ def pacf_to_arma(alpha):
 
 def loglikelihood(data, order, seed, meas_sigma=None, custom=False, custom_llk=None):
     """
-    A multivariate Gaussian loglikelihood function for ARIMA models.
+    Construct the log-likelihood function for an ARIMA model.
 
-    data:the time series data
+    The returned likelihood function evaluates the log-likelihood for
+    a given set of ARIMA model parameters. Measurement uncertainties,
+    when provided, are combined in quadrature with the free
+    process-noise parameter.
 
-    meas_sigma : per-point measurement-uncertainty array or None to 
-        reproduce the old homoscedastic likelihood.
-        Combined in quadrature with the free process-noise parameter sigma:
-        sigma_t^2 = meas_sigma_t^2 + sigma^2.
+    Parameters
+    ----------
+    data : array-like
+        One-dimensional time-series data.
+    order : tuple of int
+        ARIMA model order ``(p, d, q)``, where ``p`` is the
+        autoregressive order, ``d`` is the differencing order, and
+        ``q`` is the moving-average order.
+    seed : int
+        Random seed passed to the ARIMA model evaluation.
+    meas_sigma : array-like, optional
+        Per-observation measurement uncertainties. If provided, the
+        total variance is computed as
+
+        ``sigma_t^2 = meas_sigma_t^2 + sigma^2``,
+
+        where ``sigma`` is the fitted process-noise parameter.
+        If None, a homoscedastic likelihood is used.
+    custom : bool, optional
+        If True, return ``custom_llk`` instead of constructing the
+        default Gaussian likelihood. Default is False.
+    custom_llk : callable, optional
+        User-supplied log-likelihood function. Required when
+        ``custom=True``.
+
+    Returns
+    -------
+    callable
+        A log-likelihood function accepting a parameter dictionary
+        and returning the corresponding log-likelihood.
     """
-    p, d, q = order
-    phi_keys = [f'phi_{i+1}' for i in range(p)]
-    theta_keys = [f'theta_{j+1}' for j in range(q)]
-    init_y_keys = [f'init_y_{k+1}' for k in range(p)]
 
     data = jnp.asarray(data)
     n = data.shape[0]
@@ -82,7 +128,39 @@ def loglikelihood(data, order, seed, meas_sigma=None, custom=False, custom_llk=N
         return llk
 
 
-def pacf_loglikelihood(data, order, seed, meas_sigma=None):
+def pacf_loglikelihood(data:array, order:tuple, seed:int, meas_sigma=None):
+    """
+    Construct a Gaussian log-likelihood function using PACF parameters.
+
+    The AR and MA coefficients are parameterised through partial
+    autocorrelation coefficients and transformed to ARMA coefficients
+    using the Durbin--Levinson recursion.
+
+    Parameters
+    ----------
+    data : array-like
+        One-dimensional time-series data.
+    order : tuple of int
+        ARIMA model order ``(p, d, q)``, where ``p`` is the
+        autoregressive order, ``d`` is the differencing order, and
+        ``q`` is the moving-average order.
+    seed : int
+        Random seed passed to the ARIMA model evaluation.
+    meas_sigma : array-like, optional
+        Per-observation measurement uncertainties. If provided, the
+        total variance is computed as
+
+        ``sigma_t^2 = meas_sigma_t^2 + sigma^2``.
+
+        If None, a homoscedastic likelihood is used.
+
+    Returns
+    -------
+    callable
+        A log-likelihood function accepting a dictionary of model
+        parameters and returning the corresponding log-likelihood.
+    """
+    
     p, d, q = order
     ar_keys = [f'alpha_ar_{i+1}' for i in range(p)]
     ma_keys = [f'alpha_ma_{j+1}' for j in range(q)]
@@ -124,12 +202,30 @@ def pacf_loglikelihood(data, order, seed, meas_sigma=None):
 
 def prior_parameters(prior_type:str,order:tuple,coeff_scale,mu_mean,mu_scale,prior_bounds={}):
     """
-    A helper function to return the prior parameters dictionary to be used in Nested Sampling
-    Arguments:
-     prior_type: type of prior distribution to be used - 'normal' or 'uniform'
-     order : the order (p,d,q) of ARIMA model
-     prior_bounds : the bounds of prior parameters if prior_type=='uniform'
-    
+    Construct the prior-parameter dictionary for an ARIMA model.
+
+    Parameters
+    ----------
+    prior_type : {"normal", "pacf", "uniform"}
+        Type of prior parameterisation.
+    order : tuple of int
+        ARIMA model order ``(p, d, q)``.
+    coeff_scale : float
+        Scale of the normal prior distributions for the AR and MA
+        coefficients when ``prior_type="normal"``.
+    mu_mean : float
+        Mean of the prior distribution for the long-term mean ``mu``.
+    mu_scale : float
+        Scale of the prior distribution for the long-term mean ``mu``.
+    prior_bounds : dict, optional
+        Parameter bounds used when ``prior_type="uniform"``. Must
+        contain the bounds required for the selected ARIMA order.
+
+    Returns
+    -------
+    dict
+        Dictionary containing the prior parameters for the ARIMA model.
+        
     """
     p,d,q = order
     prior_params = {}
@@ -182,22 +278,104 @@ def prior_parameters(prior_type:str,order:tuple,coeff_scale,mu_mean,mu_scale,pri
 
 class ARIMA_Nested_Sampler:
  """
- A class to perform Nested Sampling using the Blackjax Nested Sampler for ARIMA Models.
- """
+    Perform Bayesian inference for an ARIMA model using Nested Sampling.
+
+    This class runs a nested-sampling calculation for a specified
+    ARIMA(p, d, q) model using BlackJAX. The resulting posterior
+    samples and Bayesian evidence are stored as attributes of the
+    fitted instance.
+
+    In addition to fitting the model, the class provides methods for
+    summarising the posterior, obtaining a fit evaluated at the
+    posterior-mean parameters, and performing in-sample and
+    out-of-sample forecasting.
+
+    Parameters
+    ----------
+    data : array-like
+        One-dimensional time-series data to be modelled.
+    order : tuple of int
+        ARIMA model order ``(p, d, q)``.
+    mu_mean : float
+        Mean of the prior distribution for the long-term mean ``mu``.
+    mu_scale : float
+        Scale of the prior distribution for the long-term mean ``mu``.
+    num_live : int
+        Number of live points used by the nested sampler.
+    num_delete : int
+        Number of live points removed at each nested-sampling
+        iteration.
+    seed : int
+        Random seed used to initialise the sampling calculation.
+    inner_steps_factor : int, optional
+        Factor controlling the number of inner sampling steps.
+        The number of inner steps is given by
+        ``inner_steps_factor * ndim``, where ``ndim`` is the number
+        of model parameters. Default is 6.
+    prior_scale : float, optional
+        Scale of the normal priors on the AR and MA coefficients.
+        Default is 1.
+    prior_type : {"normal", "pacf", "uniform"}, optional
+        Prior parameterisation used for the model. Default is
+        ``"normal"``.
+    meas_sigma : array-like, optional
+        Per-observation measurement uncertainties. If provided,
+        measurement and process-noise variances are combined in
+        quadrature in the likelihood.
+    prior_bounds : dict, optional
+        Parameter bounds used when ``prior_type="uniform"``.
+
+    Attributes
+    ----------
+    data : jax.Array
+        Input time-series data.
+    order : tuple of int
+        ARIMA model order ``(p, d, q)``.
+    mu_mean : float
+        Prior mean for the long-term mean.
+    mu_scale : float
+        Prior scale for the long-term mean.
+    num_live : int
+        Number of nested-sampling live points.
+    num_delete : int
+        Number of points removed per nested-sampling iteration.
+    seed : int
+        Random seed used for the sampling calculation.
+    prior_scale : float
+        Scale of the AR and MA coefficient priors.
+    prior_type : str
+        Prior parameterisation used by the sampler.
+    prior_bounds : dict
+        Bounds supplied for a uniform prior.
+    meas_sigma : array-like or None
+        Per-observation measurement uncertainties.
+    prior_params : dict
+        Prior-parameter specification used to initialise the sampler.
+    particles : dict
+        Initial live particles sampled from the prior.
+    V : float or None
+        Prior-volume factor associated with the selected prior.
+    posterior_samples : anesthetic.NestedSamples
+        Posterior samples produced by the nested-sampling calculation.
+    posterior_means : list
+        Posterior mean value of each fitted parameter.
+    log_evidence : float
+        Estimated logarithm of the Bayesian evidence.
+    log_evidence_err : float
+        Estimated uncertainty in the log Bayesian evidence.
+    ns_time : float
+        Runtime of the nested-sampling calculation, in seconds.
+    forecast_results : object
+        Results from the most recent out-of-sample forecast.
+    insample_results : object
+        Results from the most recent in-sample forecast.
+    y_fit : jax.Array
+        Posterior-mean fitted time series generated by
+        :meth:`mean_fit_plot`.
+    """
  def __init__(self,data,order,mu_mean,mu_scale,num_live,num_delete,seed,inner_steps_factor=6,prior_scale=1,
               prior_type="normal",meas_sigma=None,prior_bounds={}):
-  """
-  Initializes and runs the Nested Sampling.
-  Args:
-     data (array or list) : The time_series data to be fitted.
-     order (tuple) : (p,d,q) order of the ARIMA model.
-     mu_mean : normal prior mean for the long term mean of the time series 
-     mu_scale : normal prior scale for the long term mean of the time series
-     num_live (int) : number of live points to draw from the prior space
-     num_delete (int) : number of points to delete at each iteration
-     seed (int) : Random seed 
-      
-  """
+  
   self.data = jnp.asarray(data)
   self.order = order
   self.mu_mean = mu_mean
@@ -308,6 +486,18 @@ class ARIMA_Nested_Sampler:
 
 #Print results:
  def summary(self):
+    """
+    Print a summary of the nested-sampling results.
+
+    The summary includes the nested-sampling runtime, posterior mean
+    of each fitted parameter, and the estimated logarithm of the
+    Bayesian evidence. A two-dimensional posterior plot is also
+    generated.
+
+    Returns
+    -------
+    None
+    """
     print("||NESTED SAMPLING SUMMARY RESULTS||")
     print("----------------------------------------------------")
     print(f"Nested sampling runtime: {self.ns_time:.2f} seconds")
@@ -326,12 +516,37 @@ class ARIMA_Nested_Sampler:
     plt.suptitle("Posterior Distributions")
     
  def get_mean_forecasts(self):
+     """
+    Evaluate the ARIMA model at the posterior-mean parameters.
+
+    Returns
+    -------
+    jax.Array
+        Fitted time series evaluated using the posterior mean of
+        each model parameter.
+    """
      p,d,q = self.order
      y_fit = ARIMA_fast(self.data,self.order,self.posterior_means[p+q],self.posterior_means[p+q+1],self.posterior_means[0:p],self.posterior_means[p:p+q],self.posterior_means[p+q+1:2*p+q+1],self.seed)
      return y_fit
      
   
  def mean_fit_plot(self,compare=None):
+    """
+    Plot the ARIMA fit obtained from the posterior-mean parameters.
+
+    Parameters
+    ----------
+    compare : bool or None, optional
+        If True, plot both the observed data and the fitted ARIMA
+        model. If None, plot only the fitted model. Other values
+        raise a ``SyntaxError``.
+
+    Returns
+    -------
+    None
+        The fitted time series is stored in the ``y_fit`` attribute
+        and the plot is displayed using Matplotlib.
+    """
    p,d,q = self.order
    y_fit = ARIMA_fast(self.data,self.order,self.posterior_means[p+q],self.posterior_means[p+q+1],self.posterior_means[0:p],self.posterior_means[p:p+q],self.posterior_means[p+q+1:2*p+q+1],self.seed)
    self.y_fit = y_fit
@@ -355,11 +570,56 @@ class ARIMA_Nested_Sampler:
                          plot_nested=True, plot_climatology=True, plot_persistence=True,
                          ax=None, **kwargs):
      """
-     Thin wrapper around PosteriorResults.outsample_forecast, using
-     self.posterior_samples directly (no CSV round-trip needed for a live
-     instance). If upper_index is None, overall_data is treated as the
-     training data itself and no test-data scoring is done.
-     """
+    Generate posterior-based out-of-sample forecasts.
+
+    The posterior samples from the nested-sampling calculation are
+    passed to ``PosteriorResults`` to generate forecasts. The results
+    are stored in the ``forecast_results`` attribute.
+
+    Parameters
+    ----------
+    overall_time : array-like
+        Time values corresponding to ``overall_data``.
+    overall_data : array-like
+        Complete time series containing the training data and, when
+        applicable, the test data.
+    num_forecast : int
+        Number of future time steps to forecast.
+    upper_index : int or None, optional
+        Index separating the training and test portions of
+        ``overall_data``. If None, ``overall_data`` is treated as the
+        training data and no test-data scoring is performed.
+    n_samples : int, optional
+        Number of posterior samples used for forecasting. Default is
+        1000.
+    seed : int or None, optional
+        Random seed used for forecasting. If None, the seed from the
+        nested-sampling run is used.
+    plot_nested : bool, optional
+        Whether to plot the nested-sampling posterior forecast.
+        Default is True.
+    plot_climatology : bool, optional
+        Whether to include a climatology comparison. Default is True.
+    plot_persistence : bool, optional
+        Whether to include a persistence comparison. Default is True.
+    ax : matplotlib.axes.Axes or None, optional
+        Existing Matplotlib axes on which to draw the forecast.
+    **kwargs
+        Additional keyword arguments passed to the underlying
+        forecasting method.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure containing the forecast.
+    results : object
+        Forecast results returned by ``PosteriorResults``.
+
+    Notes
+    -----
+    The forecast results are also stored in the
+    ``forecast_results`` attribute.
+    """
      from .arima_results import PosteriorResults
      forecaster = PosteriorResults(self.posterior_samples, self.data, order=self.order, prior_type=self.prior_type,
                                     seed=seed if seed is not None else self.seed)
@@ -373,10 +633,41 @@ class ARIMA_Nested_Sampler:
 
  def insample_forecast(self, training_time, n_samples=1000, seed=None, ax=None, **kwargs):
      """
-     Thin wrapper around PosteriorResults.insample_forecast, using
-     self.posterior_samples directly. Plots the posterior in-sample fit
-     and residuals against self.data.
-     """
+    Generate posterior-based in-sample forecasts.
+
+    The posterior samples from the nested-sampling calculation are
+    passed to ``PosteriorResults`` to generate an in-sample fit and
+    residual analysis. The results are stored in the
+    ``insample_results`` attribute.
+
+    Parameters
+    ----------
+    training_time : array-like
+        Time values corresponding to the training data.
+    n_samples : int, optional
+        Number of posterior samples used for the forecast. Default is
+        1000.
+    seed : int or None, optional
+        Random seed used for forecasting. If None, the seed from the
+        nested-sampling run is used.
+    ax : matplotlib.axes.Axes or None, optional
+        Existing Matplotlib axes on which to draw the forecast.
+    **kwargs
+        Additional keyword arguments passed to the underlying
+        forecasting method.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure containing the in-sample fit and residual analysis.
+    results : object
+        Forecast results returned by ``PosteriorResults``.
+
+    Notes
+    -----
+    The forecast results are also stored in the
+    ``insample_results`` attribute.
+    """
      from .arima_results import PosteriorResults
      forecaster = PosteriorResults(self.posterior_samples, self.data, order=self.order, prior_type=self.prior_type,
                                     seed=seed if seed is not None else self.seed)
