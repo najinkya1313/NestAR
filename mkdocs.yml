@@ -6,8 +6,8 @@ site_url: https://najinkya1313.github.io/NestAR/
 
 theme:
   name: readthedocs
-  logo: assets/nestar_logo.png 
-  favicon: assets/nestar_logo.png
+  logo: assets/nestar_compact_logo.png 
+  favicon: assets/nestar_compact_logo.png
   features:
     - navigation.tabs
     - navigation.sections
