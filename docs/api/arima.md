@@ -1,0 +1,3 @@
+# ARIMA model
+
+::: nestar.ARIMA

@@ -2,11 +2,12 @@ site_name: NestAR
 site_description: Bayesian ARIMA model selection for astronomical time-series analysis using Nested Sampling
 site_url: https://najinkya1313.github.io/NestAR/
 
-repo_name: najinkya1313/NestAR
-repo_url: https://github.com/najinkya1313/NestAR
+
 
 theme:
-  name: material
+  name: readthedocs
+  logo: assets/nestar_logo.png 
+  favicon: assets/nestar_logo.png
   features:
     - navigation.tabs
     - navigation.sections
@@ -19,7 +20,17 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [.]
+          paths: [src]
+          options:
+            docstring_style: numpy
+            docstring_section_style: list
+            merge_init_into_class: true
+            docstring_options:
+              ignore_init_summary: true
+            show_root_heading: true
+            show_source: false
+            members_order: source
+            separate_signature: true
 
 markdown_extensions:
   - admonition
@@ -35,6 +46,9 @@ nav:
   - Installation: installation.md
   - Quick Start: quickstart.md
   - User Guide: user-guide.md
-  - API Reference: api.md
-  - Reproducing the Paper: reproduction.md
+  - API Reference:
+      - ARIMA model: api/arima.md
+      - Nested sampler: api/nested-sampling.md
+      - Model comparison: api/model-comparison.md
+      - Results and plotting: api/results.md
   - Citation: citation.md
