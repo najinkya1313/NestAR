@@ -8,7 +8,7 @@ A typical workflow is:
 
 1. Prepare a time series.
 2. Choose the differencing order \(d\).
-3. Fit candidate ARIMA\((p,d,q)\) models.
+3. Fit candidate ARIMA(p,d,q) models.
 4. Compare their Bayesian evidences.
 5. Analyse the posterior of the selected model.
 6. Use the posterior samples for fitting and forecasting.
