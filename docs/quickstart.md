@@ -118,7 +118,9 @@ results = ARIMA_model_comparison(
     seed=42,
     mu_mean=0,
     mu_scale=1,
-)
+).run()
+
+results.plot_evidence_heatmap(max_p=5)
 ```
 
 The resulting evidences can be used to compare the candidate ARIMA models.
