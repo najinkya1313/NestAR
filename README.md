@@ -10,7 +10,7 @@
 
 ## Overview
 
-**NestAR** combines **Nested Sampling** with **ARIMA** (**A**uto**R**egressive **I**tegrated **M**oving **A**verage) models for Bayesian model selection. 
+**NestAR** combines **Nested Sampling** with **ARIMA** (**A**uto**R**egressive **I**ntegrated **M**oving **A**verage) models for Bayesian model selection. 
 
 It provides a rigorous alternative to maximum-likelihood based selection and fitting of ARIMA models, such as using the Bayesian or Akaike Information Criterion.
 
