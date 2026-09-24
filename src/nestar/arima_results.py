@@ -1,11 +1,11 @@
 """
 arima_results.py
 
-Everything to do with the *output* of an ARIMA nested-sampling run, whether
-that's a model-comparison grid (an evidence text file) or a single model's
-posterior chain (an anesthetic-format samples CSV). Two classes:
+For postprocessing the output of an ARIMA nested-sampling run.
+This includes results of the model-comparison grid (an evidence text file) or a single model's
+posterior chain (an anesthetic-format samples CSV). It includes two main classes:
 
-    EvidenceResults  -- self-consistent read + plot interface for a saved
+    EvidenceResults  -- read + plot interface for a saved
         evidence-comparison text file (as written by
         ARIMA_model_comparison.run()). Mirrors that class's
         .load_evidence_file() / .plot_evidence_heatmap() / .compare() /
@@ -21,16 +21,9 @@ posterior chain (an anesthetic-format samples CSV). Two classes:
         analysis (posterior_point_estimate, point_estimate_forecast,
         plot_point_estimate_fit, corner_plot).
 
-Everything below the two classes' module-level helpers is plain
-numpy/scipy/matplotlib and has no jax/anesthetic dependency; the classes
-themselves do (EvidenceResults doesn't need jax/anesthetic at all, but
-since this is now one file, importing it pulls those in regardless of
-which class you actually use -- see the note in the module docstring
-history below if you want to split them back apart).
 
-This module is imported as `arima_results` (unchanged) by
-arima_model_comparison.py (`import arima_results as ar`) and as
-`from arima_results import PosteriorResults` by ARIMA_ns.py.
+This module is utilized by arima_model_comparison.py
+
 """
 
 import ast
@@ -55,12 +48,14 @@ from .ARIMA_ns import pacf_to_arma
 # --------------------------------------------------------------------------- #
 
 def num_arima_params(order, include_mean=True, include_scale=True):
-    """Number of free parameters k for an ARIMA(p, d, q) model, for use in BIC.
+    """
+    Number of free parameters k for an ARIMA(p, d, q) model, for use in BIC.
 
     By default this counts the p AR coefficients + q MA coefficients, plus one
     parameter for the long-term mean (mu) and one for the noise scale (sigma),
     since that's what ARIMA_Nested_Sampler appears to fit. Differencing order
     d does not add a free parameter.
+    
     """
     p, d, q = order
     k = 2 * p + q
@@ -85,7 +80,7 @@ def compute_bic(max_loglikelihood, num_params, num_data):
 
 
 # --------------------------------------------------------------------------- #
-# Prior-volume bookkeeping (reviewer items 2, 3b, 3c)
+# Prior-volume bookkeeping 
 # --------------------------------------------------------------------------- #
 
 def compute_log_V_boost(V):
@@ -112,7 +107,7 @@ def compute_log_V_boost(V):
 # --------------------------------------------------------------------------- #
 
 def _split_top_level(line, sep=","):
-    """Split on `sep`, but ignore any `sep` found inside parentheses -- needed
+    """Split on `sep`, but ignores any `sep` found inside parentheses
     because the Order field is itself a comma-containing tuple like
     '(1, 0, 2)'.
     """
@@ -143,20 +138,24 @@ def _parse_line(line):
 
 
 def load_evidence_file(file_name, check_normalization=True, atol=1e-6):
-    """Read back the results written by ARIMAModelComparison.run() (or by the
-    old standalone ARIMA_model_comparison function).
+    """Read back the results written by ARIMA_Model_Comparison.run()
 
-    Understands any subset of the fields Order, Seed, Evidence, Error, V,
-    MaxLogL, BIC, D0Occam, NetPriorVolume, Posterior that happen to be
-    present on each line, so it is backward compatible with older evidence
-    files that only have Order/Seed/Evidence/Error (any missing field comes
-    back as None). If a file has no Posterior column, the log posteriors are
-    (re)computed here from the Evidence column. log_V_boost is never read
-    from the file directly -- it's always rederived from V via
-    compute_log_V_boost, since it's a pure function of V and storing it
-    separately would risk it going stale relative to V.
+    Parameters
+    ----------
+    file_name : string
+    The filepath of the evidence file generated from ARIMA_model_comparison.run()
+    
+    check_normalization : bool
+    Set to true by default. Sanity checks that the calculated logPs are normalized (sum to one).
 
-    Returns a dict with keys:
+    atol : float or int
+    The tolerance level for the deviation of normalization from 1. Set to 1e-6 by default.
+    
+
+    Returns
+    -------
+    dictionary with keys:
+    
         orders                   : list of (p, d, q) tuples, or None if not present
         evidences                : np.ndarray of log evidences
         evidence_err              : np.ndarray of log evidence errors
@@ -170,10 +169,13 @@ def load_evidence_file(file_name, check_normalization=True, atol=1e-6):
             (read from a NetPriorVolume column if present; else recomputed
             from log_V_boost + d0_occam if both are available; else None)
 
-    Note: per-parameter D0 detail (which init_y_i contributed how much) is
+    Note
+    -------
+    per-parameter D0 detail (which init_y_i contributed how much) is
     NOT persisted to the text file -- only the per-model total. That detail
     only exists on a live ARIMA_model_comparison.d0_per_param right after
     .run(), not after a reload via .load_evidence_file().
+    
     """
     records = []
     with open(file_name, "r") as f:
@@ -255,6 +257,39 @@ def check_posteriors_sum_to_one(log_posteriors, atol=1e-6):
 # --------------------------------------------------------------------------- #
 
 def _grid_from_orders(orders, values, errors, max_p, max_q):
+    """Scatter a flat per-model array onto a 2D ``(q, p)`` grid.
+
+    Places each model's value at row ``q`` and column ``p`` of an array initialised
+    to NaN, so that models absent from ``orders`` (for example ``(0, d, 0)``) or
+    lying outside the requested grid remain NaN.
+
+    Parameters
+    ----------
+    orders : sequence of tuple of int
+        ARIMA orders ``(p, d, q)``, one per entry of ``values``.
+    values : array-like
+        Flat array of the per-model quantity, ordered like ``orders``.
+    errors : array-like or None
+        Flat array of uncertainties on ``values``, ordered like ``orders``. If
+        None, no error grid is built.
+    max_p : int
+        Maximum autoregressive order; the grid has ``max_p + 1`` columns.
+    max_q : int
+        Maximum moving-average order; the grid has ``max_q + 1`` rows.
+
+    Returns
+    -------
+    heatmap : numpy.ndarray
+        Array of shape ``(max_q + 1, max_p + 1)`` holding ``values``, indexed as
+        ``heatmap[q, p]``, with NaN in unfilled cells.
+    heatmap_err : numpy.ndarray or None
+        Array of the same shape holding ``errors``, or None if ``errors`` is None.
+
+    Notes
+    -----
+    The differencing order ``d`` is ignored when placing values: if several orders
+    share the same ``(p, q)``, later entries overwrite earlier ones.
+    """
     heatmap = np.full((max_q + 1, max_p + 1), np.nan)
 
     heatmap_err = (
@@ -278,29 +313,88 @@ def plot_evidence_heatmap(data, max_p, max_q=None, orders=None, contrast=0,
                            highlight_max=False, annotate=True, invert=False,
                            axes=None, figure=None, title=None, cbar_label=None,
                            value_fmt="{:.1f}", cbar_label_top=False, **kwargs):
-    """Plot a heatmap of a per-model quantity (log posterior, BIC, V,
-    d0_occam, net_prior_volume_effect, ...) on the (p, q) grid.
+                               
+    """Plot a per-model quantity as an annotated heatmap on the ``ARMA(p, q)`` grid.
 
-    Arguments:
-    data : tuple (values, errors). `values` is either
-        - a flat array ordered like the (p, q) grid excluding (0, d, 0)
-          (the historical behaviour), used together with `orders`, or
-        - already a 2D (max_q+1, max_p+1) array.
-        `errors` may be None if the quantity has no associated uncertainty
-        (e.g. BIC, V, d0_occam) -- annotations then omit the "+/-" line.
-    max_p, max_q : max AR / MA order of the grid. max_q defaults to max_p
-        (square grid), matching the old behaviour.
-    orders : list of (p, d, q) tuples matching `values`, required when
-        `values` is a flat array (i.e. whenever data didn't come pre-gridded).
-    invert : invert the colormap -- use this for quantities where *lower* is
-        better, e.g. BIC.
-    title, cbar_label : optional axis title / colorbar label overrides.
-    value_fmt : format string used for the annotated value (not the error).
-    cbar_label_top : if True, draw cbar_label as a title above the colorbar
-        (one size smaller than usual) instead of a side label -- avoids the
-        side label crowding a neighbouring subplot's y-axis in a 1x2 layout.
-        Used by plot_comparison_heatmap; plain single-panel calls default to
-        the old side-label placement.
+    Draws a colour-mapped image of a per-model quantity (for example log
+    posterior, BIC, ``log_V``, ``d0_occam`` or ``net_prior_volume_effect``) with the
+    AR order ``p`` on the x-axis and the MA order ``q`` on the y-axis. Each cell
+    can be annotated with its value and, if available, its uncertainty.
+
+    Parameters
+    ----------
+    data : tuple of (two array-likes or one array-like and None)
+        ``(values, errors)``. ``values`` is either
+
+        - a flat array ordered like ``orders`` (the historical behaviour), in
+          which case ``orders`` must also be given, or
+        - an already-gridded 2D array of shape ``(max_q + 1, max_p + 1)``.
+
+        ``errors`` may be None if the quantity has no associated uncertainty
+        (e.g. BIC, ``V``, ``d0_occam``); the annotations then omit the
+        uncertainty line. If given, it must have the same layout as ``values``.
+        
+    max_p : int
+        Maximum autoregressive order of the grid.
+    max_q : int, optional
+        Maximum moving-average order of the grid. Defaults to ``max_p`` (square
+        grid).
+    orders : list of tuple of int, optional
+        ARIMA orders ``(p, d, q)`` matching a flat ``values``. Required when
+        ``values`` is 1D; ignored otherwise.
+    contrast : float, default 0
+        Offset added to the smallest finite value to set the lower colour limit.
+        A positive value raises the lower limit so that low-valued cells
+        saturate, making differences among the best-scoring models easier to see.
+    highlight_max : bool, default False
+        If True, circle the best cell in cyan: the maximum, or the minimum if
+        ``invert`` is True.
+    annotate : bool, default True
+        If True, write each cell's value (and uncertainty, if available) on it.
+    invert : bool, default False
+        If True, use the reversed colormap so that *lower* values are brighter.
+        Use this for quantities where lower is better, e.g. BIC.
+    axes : matplotlib.axes.Axes, optional
+        Axes to draw on. If None, a new figure and axes are created.
+    figure : matplotlib.figure.Figure, optional
+        Figure that owns ``axes``, used to attach the colourbar. Defaults to
+        ``axes.figure``. Ignored when ``axes`` is None.
+    title : str, optional
+        Axes title. No title is drawn if None.
+    cbar_label : str, optional
+        Colourbar label. Defaults to a LaTeX label for the log posterior.
+    value_fmt : str, default "{:.1f}"
+        ``str.format`` template for the annotated value. The uncertainty is
+        always shown to one decimal place.
+    cbar_label_top : bool, default False
+        If True, draw ``cbar_label`` as a slightly smaller title above the
+        colourbar instead of as a side label. This avoids the side label
+        crowding a neighbouring subplot's y-axis in a 1x2 layout and is what
+        ``plot_comparison_heatmap`` uses; single-panel calls default to the
+        side label.
+    **kwargs
+        Additional options:
+
+        - ``fig_width``, ``fig_height`` : size in inches of the new figure
+          (default: double-column width of 508 pt, about 7.03 in, and 0.6 times
+          that for the height). Ignored when ``axes`` is given.
+        - ``annotate_fontsize`` : font size of the cell annotations (default 6).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the heatmap.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` is 1D and ``orders`` is not given.
+
+    Notes
+    -----
+    The tick range and annotations follow the shape of the gridded array rather
+    than ``max_p`` and ``max_q`` if the two differ.
+    
     """
     if max_q is None:
         max_q = max_p
@@ -384,17 +478,63 @@ def plot_comparison_heatmap(data1, data2, max_p, max_q=None, orders=None,
                              title=None, cbar_label=None, fontsize=(5, 5),
                              contrast=(0, 0),
                              **kwargs):
-    """Side-by-side (1x2) comparison of two per-model quantities on the same
-    (p, q) grid -- e.g. log posterior vs. BIC, log posterior vs. V, or
-    log posterior vs. net_prior_volume_effect.
+    """
+    Plot two per-model quantities side by side on the same ``(p, q)`` grid.
 
-    `data1` / `data2` are each a (values, errors) tuple, exactly like the
-    `data` argument to plot_evidence_heatmap. If one of them is None, this
-    falls back to a single ordinary heatmap of the other.
+    Creates a 1x2 figure of annotated heatmaps, for example log posterior versus
+    BIC, versus ``V``, or versus ``net_prior_volume_effect``. If one of the two
+    datasets is None, a single ordinary heatmap of the other is returned instead,
+    using that panel's settings.
 
-    fontsize, contrast : per-panel tuples (panel0, panel1), forwarded to
-        each plot_evidence_heatmap call as annotate_fontsize / contrast.
-        contrast also accepts a bare scalar as shorthand for (x, x).
+    Parameters
+    ----------
+    data1, data2 : tuple of (array-like, array-like or None), or None
+        Data for the left and right panels, each a ``(values, errors)`` tuple
+        exactly as for the ``data`` argument of ``plot_evidence_heatmap``.
+    max_p : int
+        Maximum autoregressive order of the grid.
+    max_q : int, optional
+        Maximum moving-average order of the grid. Defaults to ``max_p``.
+    orders : list of tuple of int, optional
+        ARIMA orders ``(p, d, q)`` matching flat ``values`` arrays. Required if
+        either dataset is a flat array.
+    labels : tuple of str, default ("Quantity 1", "Quantity 2")
+        Names of the two quantities, used as panel titles and colourbar labels
+        unless ``title`` or ``cbar_label`` are given.
+    invert : tuple of bool, default (False, False)
+        Per-panel flag to reverse the colormap, for quantities where lower is
+        better (e.g. BIC).
+    highlight_max : tuple of bool, default (False, False)
+        Per-panel flag to circle the best cell.
+    annotate : bool, default True
+        Whether to annotate cells with their values; applies to both panels.
+    value_fmt : tuple of str, default ("{:.1f}", "{:.2f}")
+        Per-panel ``str.format`` templates for the annotated values.
+    title : tuple of str, optional
+        Per-panel titles. Defaults to ``labels``.
+    cbar_label : tuple of str, optional
+        Per-panel colourbar labels. Defaults to ``labels``.
+    fontsize : tuple of int, default (5, 5)
+        Per-panel annotation font sizes, forwarded to ``plot_evidence_heatmap``
+        as ``annotate_fontsize``.
+    contrast : float or tuple of float, default (0, 0)
+        Per-panel offsets to the lower colour limit, as in
+        ``plot_evidence_heatmap``. A bare scalar ``x`` is shorthand for
+        ``(x, x)``.
+    **kwargs
+        ``fig_width`` and ``fig_height`` set the figure size in inches (default
+        width is 1.9 times the single-panel width). All other keyword arguments
+        are forwarded to ``plot_evidence_heatmap`` for each panel.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The two-panel figure (or the single-panel figure if one dataset is None).
+
+    Raises
+    ------
+    ValueError
+        If both ``data1`` and ``data2`` are None.
     """
     if data2 is None and data1 is None:
         raise ValueError("At least one of data1, data2 must be given")
@@ -459,18 +599,71 @@ def plot_comparison_heatmap(data1, data2, max_p, max_q=None, orders=None,
 # --------------------------------------------------------------------------- #
 
 def climatology_forecast(train_data, n_forecast):
-    """Flat forecast at the training-period mean."""
+    """
+    Forecast the training-period mean as a flat baseline.
+
+    Parameters
+    ----------
+    train_data : array-like
+        Training-period observations.
+    n_forecast : int
+        Number of forecast steps.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of shape ``(n_forecast,)`` in which every element is the mean of
+        ``train_data``.
+    """
     return np.full(n_forecast, float(np.mean(np.asarray(train_data))))
 
 
 def persistence_forecast(train_data, n_forecast):
-    """Flat forecast at the last training-period value."""
+    """
+    Forecast the last training-period value as a flat baseline.
+
+    Parameters
+    ----------
+    train_data : array-like
+        Training-period observations.
+    n_forecast : int
+        Number of forecast steps.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of shape ``(n_forecast,)`` in which every element is the final
+        value of ``train_data``.
+    """
     return np.full(n_forecast, float(np.asarray(train_data)[-1]))
 
 
 def forecast_metrics(y_true, y_pred, sigma_pred=None):
-    """RMSE, MAE always returned; LPD only if a per-step (or constant)
-    sigma is given -- sigma_pred can be a scalar or an array matching y_true."""
+    """
+    Compute forecast error metrics and, optionally, the log predictive density.
+
+    The root-mean-square error (RMSE) and mean absolute error (MAE) are always
+    computed. If ``sigma_pred`` is given, the log predictive density (LPD) of the
+    observations under independent Gaussian predictive distributions
+    ``N(y_pred, sigma_pred**2)`` is also computed, summed over all forecast steps.
+
+    Parameters
+    ----------
+    y_true : array-like
+        Observed values over the forecast horizon.
+    y_pred : array-like
+        Predicted values, with the same shape as ``y_true``.
+    sigma_pred : float or array-like, optional
+        Predictive standard deviation, either a constant or one value per
+        forecast step (anything broadcastable to the shape of ``y_true``). If
+        None, the LPD is not computed.
+
+    Returns
+    -------
+    dict of {str: float}
+        Dictionary with keys ``'RMSE'`` and ``'MAE'`` and, if ``sigma_pred`` was
+        given, ``'LPD'`` 
+    """
     y_true, y_pred = np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float)
     resid = y_true - y_pred
     metrics = {'RMSE': float(np.sqrt(np.mean(resid**2))), 'MAE': float(np.mean(np.abs(resid)))}
@@ -481,7 +674,25 @@ def forecast_metrics(y_true, y_pred, sigma_pred=None):
 
 
 def skill_score(metric_model, metric_baseline):
-    """1 - model/baseline"""
+    """Compute the skill of a model relative to a baseline.
+
+    The score is ``1 - metric_model / metric_baseline``. For error metrics where
+    lower is better (e.g. RMSE, MAE) it is positive when the model beats the
+    baseline, zero when the two are equal, and negative when the model is worse;
+    a value of 1 corresponds to a perfect model.
+
+    Parameters
+    ----------
+    metric_model : float
+        Error metric of the model.
+    metric_baseline : float
+        Error metric of the baseline forecast.
+
+    Returns
+    -------
+    float
+        The skill score, or NaN if ``metric_baseline`` is zero.
+    """
     return 1.0 - metric_model/metric_baseline if metric_baseline != 0 else np.nan
 
 
@@ -490,16 +701,59 @@ def skill_score(metric_model, metric_baseline):
 # --------------------------------------------------------------------------- #
 
 class EvidenceResults:
-    """Self-consistent read + plot interface for a saved ARIMA
-    model-comparison evidence file (the text file written by
-    ARIMA_model_comparison.run()).
+    """Read-only interface to a saved ARIMA model-comparison evidence file.
 
-    This is the read-only, no-sampler counterpart to ARIMA_model_comparison:
-    it exposes the same .plot_evidence_heatmap() / .compare() /
-    .prior_volume_report() interface that class offers once you've called
-    .load_evidence_file() on it, but as its own object built straight from
-    the file, with no jax/ARIMA_ns dependency and no ability (or need) to
-    run the grid itself.
+    Loads the text file written by ``ARIMA_model_comparison.run()`` and exposes
+    the per-model quantities it contains together with plotting and summary
+    methods (``plot_evidence_heatmap``, ``compare``, ``prior_volume_report`` and
+    ``cumulative_posterior_mass``). It is the sampler-free counterpart to
+    ``ARIMA_model_comparison``: it is built straight from the file, has no
+    ``jax`` / ``ARIMA_ns`` dependency, and cannot (and need not) run the model
+    grid itself.
+
+    Parameters
+    ----------
+    file_name : str
+        Path to the evidence file.
+    max_p : int
+        Maximum AR order of the model grid.
+    max_q : int, optional
+        Maximum MA order of the model grid. Defaults to ``max_p``.
+    check_normalization : bool, default True
+        Passed to ``load_evidence_file``; if True, the loaded model posterior
+        probabilities are checked for normalisation to within ``atol``.
+    atol : float, default 1e-6
+        Absolute tolerance for that normalisation check.
+
+    Attributes
+    ----------
+    file_name : str
+        Path of the file most recently read.
+    max_p, max_q : int
+        Maximum AR and MA orders of the model grid.
+    orders : list of tuple of int
+        ARIMA orders ``(p, d, q)`` of the models in the file.
+    evidences : array-like
+        Per-model evidences.
+    evidence_err : array-like
+        Uncertainties on the evidences and log posteriors.
+    log_posteriors : numpy.ndarray
+        Per-model log posterior probabilities.
+    V : array-like
+        Per-model prior-volume quantity ``V`` stored in the file.
+    max_loglikelihood : array-like
+        Per-model maximum log-likelihood.
+    BIC : array-like
+        Per-model Bayesian information criterion.
+    d0_occam : array-like
+        Per-model D0 Occam penalty.
+    log_V_boost : array-like
+        Per-model log prior-volume renormalisation from rejection sampling.
+    net_prior_volume_effect : array-like
+        Net prior-volume contribution to the log posterior (the rejection-sampling
+        renormalisation combined with the D0 Occam penalty).
+
+    Each per-model attribute is ordered like ``orders``.
     """
 
     def __init__(self, file_name, max_p, max_q=None, check_normalization=True, atol=1e-6):
@@ -519,10 +773,27 @@ class EvidenceResults:
         self.reload(check_normalization=check_normalization, atol=atol)
 
     def reload(self, file_name=None, check_normalization=True, atol=1e-6):
-        """(Re)read self.file_name (or a new file_name, if given) into this
-        instance's attributes. Useful if the underlying file has since been
-        updated -- e.g. a run() still in progress elsewhere, writing new
-        lines as each model finishes."""
+        """Re-read the evidence file into this instance.
+
+        Useful if the underlying file has been updated since it was loaded, for
+        example while a ``run()`` elsewhere is still writing a new line as each model
+        finishes.
+
+        Parameters
+        ----------
+        file_name : str, optional
+            New path to read. If given, it replaces ``self.file_name``; if None, the
+            current ``self.file_name`` is re-read.
+        check_normalization : bool, default True
+            Passed to ``load_evidence_file``; see the class docstring.
+        atol : float, default 1e-6
+            Absolute tolerance for the normalisation check.
+
+        Returns
+        -------
+        EvidenceResults
+            This instance, to allow chaining.
+        """
         self.file_name = file_name or self.file_name
         results = load_evidence_file(self.file_name, check_normalization=check_normalization, atol=atol)
         self.orders = results["orders"]
@@ -538,7 +809,29 @@ class EvidenceResults:
         return self
 
     def _quantity(self, name):
-        """Map a quantity name to a (values, errors) tuple for plotting."""
+        """Look up a stored quantity by name for plotting.
+
+        Parameters
+        ----------
+        name : str
+            One of ``'log_posteriors'``, ``'evidences'``, ``'BIC'``, ``'V'``,
+            ``'max_loglikelihood'``, ``'d0_occam'``, ``'log_V_boost'`` or
+            ``'net_prior_volume_effect'``.
+
+        Returns
+        -------
+        values : array-like
+            The per-model values.
+        errors : array-like or None
+            ``evidence_err`` for ``'log_posteriors'`` and ``'evidences'``; None for
+            all other quantities.
+
+        Raises
+        ------
+        ValueError
+            If ``name`` is unknown, or if the requested quantity was not populated
+            from the file.
+        """
         table = {
             "log_posteriors": (self.log_posteriors, self.evidence_err),
             "evidences": (self.evidences, self.evidence_err),
@@ -557,9 +850,31 @@ class EvidenceResults:
         return values, errors
 
     def plot_evidence_heatmap(self, quantity="log_posteriors", **kwargs):
-        """Ordinary single heatmap of one quantity ('log_posteriors', 'BIC',
-        'V', 'evidences', 'max_loglikelihood', 'd0_occam', 'log_V_boost', or
-        'net_prior_volume_effect') over the (p, q) grid.
+        """Plot a single heatmap of one quantity over the ``(p, q)`` grid.
+
+        Parameters
+        ----------
+        quantity : str or array-like, default "log_posteriors"
+            Either the name of a stored quantity (``'log_posteriors'``, ``'BIC'``,
+            ``'V'``, ``'evidences'``, ``'max_loglikelihood'``, ``'d0_occam'``,
+            ``'log_V_boost'`` or ``'net_prior_volume_effect'``) or a custom array of
+            values to plot directly, ordered like ``self.orders`` or already
+            gridded. Custom arrays are plotted without error bars.
+        **kwargs
+            Forwarded to the module-level ``plot_evidence_heatmap``. ``invert``
+            defaults to True only for ``'BIC'`` (lower is better). ``cbar_label``
+            defaults to ``'log $P_i$'`` whatever quantity is plotted, so override it
+            for other quantities.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The figure containing the heatmap.
+
+        Raises
+        ------
+        ValueError
+            If a named quantity is unknown or not populated in the file.
         """
         if type(quantity) != str:
             data = (quantity, None)  # take custom quantities for plotting on grid.
@@ -575,16 +890,38 @@ class EvidenceResults:
                                       orders=self.orders, **kwargs)
 
     def compare(self, quantity1="log_posteriors", quantity2=None, labels=None, **kwargs):
-        """Compare two quantities side by side, e.g.
-            results.compare("log_posteriors", "BIC")
-            results.compare("log_posteriors", "V")
-            results.compare("log_posteriors", "net_prior_volume_effect")
-        If quantity2 is None, this just falls back to the ordinary single
-        heatmap of quantity1 (same as plot_evidence_heatmap).
+        """Compare two quantities side by side on the ``(p, q)`` grid.
 
-        quantity1 / quantity2 may each be a known quantity name (str,
-        looked up via self._quantity()) or a raw array of custom values to
-        plot directly (wrapped as (values, None), i.e. with no error bars).
+        If ``quantity2`` is None this falls back to the ordinary single heatmap of
+        ``quantity1`` (same as ``plot_evidence_heatmap``).
+
+        Parameters
+        ----------
+        quantity1 : str or array-like, default "log_posteriors"
+            Quantity for the left panel: a stored quantity name (looked up with
+            ``_quantity``) or a raw array of custom values to plot directly, without
+            error bars.
+        quantity2 : str or array-like, optional
+            Quantity for the right panel, in the same forms as ``quantity1``. If
+            None, only ``quantity1`` is plotted.
+        labels : tuple of str, optional
+            Panel titles and colourbar labels. Defaults to the quantity names, or
+            "Quantity 1" / "Quantity 2" for custom arrays.
+        **kwargs
+            Forwarded to ``plot_comparison_heatmap`` (or to ``plot_evidence_heatmap``
+            when ``quantity2`` is None). ``invert`` may be given as a per-panel tuple
+            and defaults to True for any panel showing ``'BIC'``.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The comparison figure.
+
+        Examples
+        --------
+        >>> results.compare("log_posteriors", "BIC")
+        >>> results.compare("log_posteriors", "V")
+        >>> results.compare("log_posteriors", "net_prior_volume_effect")
         """
         if quantity2 is None:
             return self.plot_evidence_heatmap(quantity1, **kwargs)
@@ -603,20 +940,47 @@ class EvidenceResults:
                                         invert=invert, **kwargs)
 
     def prior_volume_report(self, order_of_interest, baseline_order):
-        """Answers reviewer item 3c directly: how much of the raw log
-        posterior difference between two orders is prior-volume bookkeeping
-        (the rejection-sampling renormalisation minus the D0 Occam penalty),
-        versus likelihood-driven signal.
+        """Split a log-posterior difference into prior-volume and likelihood parts.
 
-        Example (sunspot grid, item 3c's exact question):
-            results.prior_volume_report(order_of_interest=(9, 0, 1),
-                                         baseline_order=(0, 0, 1))
+        Quantifies how much of the raw log-posterior difference between two models is
+        prior-volume bookkeeping (the rejection-sampling renormalisation combined
+        with the D0 Occam penalty, i.e. ``net_prior_volume_effect``) and how much is
+        likelihood-driven signal.
 
-        Returns a dict with the raw log-posterior delta, the net
-        prior-volume-effect delta, and the "likelihood-only" delta obtained
-        by subtracting the latter from the former -- i.e. what's left once
-        prior-volume bookkeeping is backed out. Also reports what fraction
-        of the raw delta the prior-volume term accounts for.
+        Parameters
+        ----------
+        order_of_interest : tuple of int
+            ARIMA order ``(p, d, q)`` of the model being assessed.
+        baseline_order : tuple of int
+            ARIMA order ``(p, d, q)`` of the model it is compared against.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys. Each "delta" is the value for
+            ``order_of_interest`` minus the value for ``baseline_order``.
+
+            - ``'order_of_interest'``, ``'baseline_order'`` : the two orders.
+            - ``'raw_log_posterior_delta'`` : delta in ``log_posteriors``.
+            - ``'log_V_boost_delta'`` : delta in ``log_V_boost``.
+            - ``'d0_occam_delta'`` : delta in ``d0_occam``.
+            - ``'net_prior_volume_delta'`` : delta in ``net_prior_volume_effect``.
+            - ``'likelihood_only_delta'`` : the raw delta minus the net prior-volume
+              delta, i.e. what is left once prior-volume bookkeeping is backed out.
+            - ``'fraction_of_raw_delta_from_prior_volume'`` : net prior-volume delta
+              divided by the raw delta (NaN if the raw delta is zero).
+
+        Raises
+        ------
+        ValueError
+            If either order is not present in ``self.orders``.
+
+        Examples
+        --------
+        Sunspot grid:
+
+        >>> results.prior_volume_report(order_of_interest=(9, 0, 1),
+        ...                             baseline_order=(0, 0, 1))
         """
         i = self.orders.index(order_of_interest)
         j = self.orders.index(baseline_order)
@@ -638,28 +1002,48 @@ class EvidenceResults:
         }
 
     def cumulative_posterior_mass(self, n):
-        """Answers reviewer item 7a: the cumulative posterior probability
-        mass carried by the top-n models by log_posteriors, rather than
-        reporting only the argmax.
+        """Compute the posterior mass carried by the top-``n`` models.
 
-        Example (sunspot grid, item 7a's suggested phrasing):
-            results.cumulative_posterior_mass(1)
-            # -> {'individual_mass': array([0.17...]), 'cumulative_mass': 0.17...}
-            results.cumulative_posterior_mass(5)
-            # -> cumulative_mass just over 0.5
+        Ranks the models by ``log_posteriors`` and reports the cumulative posterior
+        probability of the ``n`` best, rather than only the argmax.
 
-        n : how many top-ranked models to include. Clipped to the number
-            of models in the grid if larger.
+        Parameters
+        ----------
+        n : int
+            Number of top-ranked models to include. Clipped to the number of models
+            in the grid if larger.
 
-        Returns a dict:
-            n                : n, after clipping
-            top_orders       : the top-n (p, d, q) orders, best first, or
-                                None if orders weren't loaded from the file
-            individual_mass  : posterior probability of each of those n
-                                models individually (exp(log_posteriors)),
-                                best first
-            cumulative_mass  : sum of individual_mass -- the total
-                                posterior probability carried by the top n
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+
+            - ``'n'`` : ``n`` after clipping.
+            - ``'top_orders'`` : list of the top-``n`` orders ``(p, d, q)``, best
+              first, or None if the orders were not loaded from the file.
+            - ``'individual_mass'`` : numpy.ndarray with the posterior probability
+              of each of those models individually (``exp(log_posteriors)``), best
+              first.
+            - ``'cumulative_mass'`` : float, the sum of ``individual_mass``, i.e. the
+              total posterior probability carried by the top ``n`` models.
+
+        Raises
+        ------
+        ValueError
+            If ``log_posteriors`` is not populated.
+
+        Notes
+        -----
+        Assumes ``log_posteriors`` are normalised over the grid, so that
+        exponentiating them gives probabilities.
+
+        Examples
+        --------
+        On the sunspot grid the best model carries about 0.17 of the posterior mass
+        and the top five just over 0.5:
+
+        >>> results.cumulative_posterior_mass(1)
+        >>> results.cumulative_posterior_mass(5)
         """
         if self.log_posteriors is None:
             raise ValueError("self.log_posteriors is not populated in this evidence file.")
@@ -680,10 +1064,33 @@ class EvidenceResults:
 # --------------------------------------------------------------------------- #
 
 def _infer_order_and_prior(chain):
-    """Counts phi_N/theta_N (normal prior) or alpha_ar_N/alpha_ma_N (pacf
-    prior) columns on the chain to recover p, q, and prior_type. d is never
-    inferred -- it's not a sampled parameter, so it leaves no trace in the
-    chain's columns."""
+    """Infer the AR/MA orders and prior type from a chain's column names.
+
+    Counts ``phi_N`` / ``theta_N`` columns (normal prior) or ``alpha_ar_N`` /
+    ``alpha_ma_N`` columns (PACF prior). If any PACF columns are present the
+    PACF prior is assumed.
+
+    Parameters
+    ----------
+    chain : pandas.DataFrame-like
+        Posterior chain (e.g. an ``anesthetic`` samples object) whose column
+        labels are either strings or tuples whose first element is the
+        parameter name.
+
+    Returns
+    -------
+    p : int
+        Inferred autoregressive order.
+    q : int
+        Inferred moving-average order.
+    prior_type : {'normal', 'pacf'}
+        Inferred parametrisation of the ARMA coefficients.
+
+    Notes
+    -----
+    The differencing order ``d`` is never inferred: it is not a sampled
+    parameter, so it leaves no trace in the chain's columns.
+    """
     names = [c[0] if isinstance(c, tuple) else c for c in chain.columns]
     names = [str(n) for n in names]
     p_normal = sum(1 for n in names if re.fullmatch(r'phi_\d+', n))
@@ -696,6 +1103,30 @@ def _infer_order_and_prior(chain):
 
 
 def _get_arma_coeffs(ar_block, ma_block, prior_type):
+    """Convert raw ARMA parameter blocks into AR and MA coefficients.
+
+    For ``prior_type='pacf'`` the blocks are partial-autocorrelation parameters
+    and are mapped to coefficients with ``pacf_to_arma``; the MA coefficients are
+    negated (``theta = -pacf_to_arma(ma_block)``). For any other prior type
+    (``'normal'``) the blocks are already coefficients and are returned as JAX
+    arrays.
+
+    Parameters
+    ----------
+    ar_block : array-like
+        Raw autoregressive parameters (coefficients or PACF values).
+    ma_block : array-like
+        Raw moving-average parameters (coefficients or PACF values).
+    prior_type : {'normal', 'pacf'}
+        Parametrisation of the blocks.
+
+    Returns
+    -------
+    phi : jax.Array
+        Autoregressive coefficients; empty if ``ar_block`` is empty.
+    theta : jax.Array
+        Moving-average coefficients; empty if ``ma_block`` is empty.
+    """
     if prior_type == 'pacf':
         ar_block, ma_block = jnp.asarray(ar_block), jnp.asarray(ma_block)
         phi = pacf_to_arma(ar_block) if ar_block.shape[0] else jnp.array([])
@@ -705,10 +1136,35 @@ def _get_arma_coeffs(ar_block, ma_block, prior_type):
 
 
 def _future_time_index(overall_time, upper_index, num_forecast):
-    """overall_time[upper_index:upper_index+num_forecast] when those future
-    timestamps exist; otherwise extrapolates forward from the last timestamp
-    at the (assumed constant) step of overall_time -- covers the no-test-data
-    case where overall_time only spans the training period."""
+    """Return the time stamps of the forecast horizon.
+
+    If the requested future stamps exist in ``overall_time`` they are read from
+    it. Otherwise they are extrapolated forward from its last stamp at its
+    (assumed constant) step, which covers the no-test-data case where
+    ``overall_time`` spans only the training period.
+
+    Parameters
+    ----------
+    overall_time : array-like
+        Time stamps of the available series.
+    upper_index : int
+        Index in ``overall_time`` of the first forecast time.
+    num_forecast : int
+        Number of forecast steps.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``overall_time[upper_index:upper_index + num_forecast]`` if that slice is
+        fully available; otherwise ``num_forecast`` extrapolated stamps starting
+        one step after ``overall_time[-1]``.
+
+    Notes
+    -----
+    The step is ``overall_time[1] - overall_time[0]``, or 1 if ``overall_time``
+    has a single entry. When extrapolating, the new stamps always start after the
+    last entry of ``overall_time``, regardless of ``upper_index``.
+    """
     overall_time = np.asarray(overall_time)
     if upper_index + num_forecast <= len(overall_time):
         return overall_time[upper_index:upper_index + num_forecast]
@@ -718,10 +1174,27 @@ def _future_time_index(overall_time, upper_index, num_forecast):
 
 
 def _weighted_mode(values, weights, grid_size=2000):
-    """1D weighted-KDE mode estimate: fits a Gaussian KDE to `values` with
-    per-sample `weights` and returns the grid location of its peak. This is
-    a marginal (per-parameter) mode, not a joint/MAP estimate. Falls back to
-    the weighted mean if a KDE can't be built (e.g. zero-variance samples).
+    """Estimate the mode of a weighted 1D sample with a Gaussian KDE.
+
+    Fits a Gaussian kernel density estimate to ``values`` with per-sample
+    ``weights`` and returns the location of its peak on a regular grid spanning
+    the sample range. This is a marginal (per-parameter) mode, not a joint/MAP
+    estimate.
+
+    Parameters
+    ----------
+    values : array-like
+        One-dimensional samples.
+    weights : array-like
+        Per-sample weights, same length as ``values``.
+    grid_size : int, default 2000
+        Number of grid points on which the density is evaluated.
+
+    Returns
+    -------
+    float
+        Location of the density peak, or the weighted mean of ``values`` if a
+        KDE cannot be built (e.g. zero-variance samples).
     """
     values = np.asarray(values, dtype=float)
     weights = np.asarray(weights, dtype=float)
@@ -739,29 +1212,68 @@ def _weighted_mode(values, weights, grid_size=2000):
 # --------------------------------------------------------------------------- #
 
 class PosteriorResults:
-    """Self-consistent read + analysis interface for a saved ARIMA posterior
-    chain (an anesthetic-format CSV written by NestedSamples.to_csv(), as
-    produced by ARIMA_Nested_Sampler / ARIMA_model_comparison). Initialized
-    from either that CSV's path or an already-loaded chain object (e.g. a
-    live NestedSamples instance).
+    """Read and analyse a saved ARIMA posterior chain.
 
-    p, q, and prior_type are inferred from the chain's columns if not given;
-    d is not inferable from the chain and defaults to 0.
+    Wraps an ``anesthetic``-format chain, either loaded from the CSV written by
+    ``NestedSamples.to_csv()`` (as produced by ``ARIMA_Nested_Sampler`` /
+    ``ARIMA_model_comparison``) or supplied as an already-loaded chain such as a
+    live ``NestedSamples`` instance. The orders ``p`` and ``q`` and the prior type
+    are inferred from the chain's columns if not given; the differencing order
+    ``d`` cannot be inferred and defaults to 0.
 
-    Two families of methods:
-      - full-chain forecasting (unchanged from the former ARIMAForecaster):
-        compute_forecast / outsample_forecast propagate the whole posterior
-        through fgivenx for an out-of-sample forecast with proper posterior
-        uncertainty bands; insample_forecast does the same for the in-sample
-        fit + residuals.
-      - point-estimate analysis (new): posterior_point_estimate collapses
-        the chain to a single mean/median/mode value per parameter;
-        point_estimate_forecast uses that single point to compute an
-        in-sample fit (and, optionally, a deterministic forward forecast)
-        directly via ARIMA_fast/ARIMA_forecast, with no posterior
-        propagation; plot_point_estimate_fit plots that fit against the data
-        with residuals; corner_plot draws the 2D posterior (optionally with
-        the prior overlaid).
+    Two families of methods are provided:
+
+    - Full-chain forecasting (unchanged from the former ``ARIMAForecaster``):
+      ``compute_forecast`` and ``outsample_forecast`` propagate the whole
+      posterior through ``fgivenx`` to give out-of-sample forecasts with
+      posterior uncertainty bands; ``insample_forecast`` does the same for the
+      in-sample fit and residuals, and ``pooled_residuals`` returns the residuals
+      as an array.
+    - Point-estimate analysis: ``posterior_point_estimate`` collapses the chain
+      to a single mean, median or mode per parameter; ``point_estimate_forecast``
+      uses that point to compute an in-sample fit (and optionally a forecast)
+      directly via ``ARIMA_fast`` / ``ARIMA_forecast``, with no posterior
+      propagation; ``plot_point_estimate_fit`` plots that fit against the data
+      with residuals; ``corner_plot`` draws the 2D posterior, optionally with the
+      prior overlaid.
+
+    Parameters
+    ----------
+    chain_path : str or anesthetic.Samples
+        Path to a chain CSV, or an already-loaded chain object.
+    train_data : array-like
+        One-dimensional training series to which the chain was fitted.
+    order : tuple of int, optional
+        ARIMA order ``(p, d, q)``. If None, ``p`` and ``q`` are inferred from the
+        chain and ``d`` is taken from the ``d`` argument.
+    prior_type : {'normal', 'pacf'}, optional
+        Parametrisation of the ARMA coefficients in the chain: ``'normal'``
+        (``phi_i`` / ``theta_j`` columns) or ``'pacf'`` (``alpha_ar_i`` /
+        ``alpha_ma_j`` columns). Inferred from the chain if None.
+    d : int, default 0
+        Differencing order used when ``order`` is None; ignored otherwise.
+    seed : int, default 0
+        Default random seed for generating forecast innovations.
+
+    Attributes
+    ----------
+    chain : anesthetic.Samples
+        The posterior chain.
+    train_data : numpy.ndarray
+        Training series.
+    order : tuple of int
+        ARIMA order ``(p, d, q)``.
+    prior_type : {'normal', 'pacf'}
+        Parametrisation of the ARMA coefficients in the chain.
+    seed : int
+        Default random seed.
+    sigma, residuals
+        Set by ``point_estimate_forecast``: the innovation scale used for the
+        in-sample fit and the resulting residuals.
+
+    Notes
+    -----
+    The resolved order and prior type are printed on construction.
     """
 
     def __init__(self, chain_path, train_data, order=None, prior_type=None, d=0, seed=0):
@@ -779,9 +1291,19 @@ class PosteriorResults:
     # ------------------------------------------------------------------ #
 
     def _arma_keys(self):
-        """(ar_keys, ma_keys, init_y_keys) column names for this object's
-        order/prior_type -- ar/ma keys are phi_i/theta_j for prior_type
-        'normal' or alpha_ar_i/alpha_ma_j for 'pacf'."""
+        """Return the chain column names of the ARMA parameters.
+
+        Returns
+        -------
+        ar_keys : list of str
+            ``phi_1`` ... ``phi_p`` for the ``'normal'`` prior, or ``alpha_ar_1`` ...
+            ``alpha_ar_p`` for ``'pacf'``.
+        ma_keys : list of str
+            ``theta_1`` ... ``theta_q`` for the ``'normal'`` prior, or
+            ``alpha_ma_1`` ... ``alpha_ma_q`` for ``'pacf'``.
+        init_y_keys : list of str
+            ``init_y_1`` ... ``init_y_p``.
+        """
         p, d, q = self.order
         ar_keys = [f'alpha_ar_{i+1}' for i in range(p)] if self.prior_type == 'pacf' else [f'phi_{i+1}' for i in range(p)]
         ma_keys = [f'alpha_ma_{j+1}' for j in range(q)] if self.prior_type == 'pacf' else [f'theta_{j+1}' for j in range(q)]
@@ -789,8 +1311,14 @@ class PosteriorResults:
         return ar_keys, ma_keys, init_y_keys
 
     def _param_keys(self):
-        """Full flat list of sampled-parameter column names: ar + ma +
-        sigma + mu + init_y."""
+        """Return the full list of sampled-parameter column names.
+
+        Returns
+        -------
+        list of str
+            AR keys, MA keys, ``'sigma'``, ``'mu'`` and the ``init_y`` keys, in that
+            order.
+        """
         ar_keys, ma_keys, init_y_keys = self._arma_keys()
         return ar_keys + ma_keys + ['sigma', 'mu'] + init_y_keys
 
@@ -799,6 +1327,36 @@ class PosteriorResults:
     # ------------------------------------------------------------------ #
 
     def _pack_samples(self, n_samples, seed=None):
+        """Draw posterior samples and pack them as flat parameter tuples.
+
+        Draws ``n_samples`` rows from the chain and converts each into a tuple laid
+        out as ``(ar..., ma..., sigma, mu, init_y..., forecast_seed)``, the format
+        consumed by ``_unpack_params`` and the ``fgivenx`` wrapper functions.
+
+        Parameters
+        ----------
+        n_samples : int
+            Number of samples to draw from the chain.
+        seed : int, optional
+            Seed for the random per-sample forecast seeds (the last element of each
+            tuple). Defaults to ``self.seed``.
+
+        Returns
+        -------
+        list of tuple
+            One packed tuple per drawn sample.
+
+        Raises
+        ------
+        ValueError
+            If the chain lacks any column expected for this object's order and prior
+            type.
+
+        Notes
+        -----
+        ``seed`` only controls the per-sample forecast seeds; the selection of rows
+        by ``self.chain.sample`` is not seeded here.
+        """
         p, d, q = self.order
         ar_keys, ma_keys, init_y_keys = self._arma_keys()
 
@@ -825,6 +1383,30 @@ class PosteriorResults:
         return packed
 
     def _unpack_params(self, params):
+        """Unpack a packed sample tuple into model quantities.
+
+        Parameters
+        ----------
+        params : sequence of float
+            Flat sample laid out as ``(ar..., ma..., sigma, mu, init_y...,
+            forecast_seed)``, as produced by ``_pack_samples``.
+
+        Returns
+        -------
+        phi : jax.Array
+            Autoregressive coefficients (PACF values already converted if the prior
+            type is ``'pacf'``).
+        theta : jax.Array
+            Moving-average coefficients (likewise converted).
+        sigma : jax.Array
+            Innovation standard deviation (scalar).
+        mu : jax.Array
+            Process mean (scalar).
+        init_y : jax.Array
+            Initial values of the ARIMA recurrence.
+        seed_i : int
+            Random seed for this sample's forecast innovations.
+        """
         p, d, q = self.order
         params = jnp.asarray(params)
         ar_raw, ma_raw = params[0:p], params[p:p+q]
@@ -835,6 +1417,21 @@ class PosteriorResults:
         return phi, theta, sigma, mu, init_y, seed_i
 
     def _forecast_func(self, num_forecast):
+        """Build a forecast function in the form expected by ``fgivenx``.
+
+        Parameters
+        ----------
+        num_forecast : int
+            Number of forecast steps.
+
+        Returns
+        -------
+        callable
+            Function ``f(x, params)`` that unpacks a packed sample ``params`` and
+            returns the ``num_forecast``-step forecast from ``ARIMA_forecast``. The
+            argument ``x`` only satisfies ``fgivenx``'s calling convention and is
+            unused.
+        """
         def f(x, params):
             phi, theta, sigma, mu, init_y, seed_i = self._unpack_params(params)
             return ARIMA_forecast(self.train_data, self.order, sigma, mu, phi, theta,
@@ -842,6 +1439,23 @@ class PosteriorResults:
         return f
 
     def _fit_func(self,deterministic=True):
+        """Build an in-sample fit function in the form expected by ``fgivenx``.
+
+        Parameters
+        ----------
+        deterministic : bool, default True
+            If True, the fit is evaluated with innovation scale ``sigma = 0``
+            (noise-free). If False, the sample's own ``sigma`` is passed to
+            ``ARIMA_fast``.
+
+        Returns
+        -------
+        callable
+            Function ``f(x, params)`` that unpacks a packed sample ``params`` and
+            returns the fitted values over the training period from ``ARIMA_fast``.
+            The argument ``x`` only satisfies ``fgivenx``'s calling convention and is
+            unused.
+        """
         def f(x, params):
             phi, theta, sigma, mu, init_y, seed_i = self._unpack_params(params)
             if deterministic==True:
@@ -852,14 +1466,53 @@ class PosteriorResults:
         return f
 
     def _residual_func(self,deterministic=True):
+        """Build a residual function in the form expected by ``fgivenx``.
+
+        Parameters
+        ----------
+        deterministic : bool, default True
+            Passed to ``_fit_func``: whether the fit is evaluated noise-free.
+
+        Returns
+        -------
+        callable
+            Function ``f(x, params)`` returning ``train_data`` minus the fitted
+            values for a packed sample ``params``. The argument ``x`` only satisfies
+            ``fgivenx``'s calling convention and is unused.
+        """
         fit_func = self._fit_func(deterministic=deterministic)
         def f(x, params):
             return jnp.asarray(self.train_data) - fit_func(x, params)
         return f
 
     def compute_forecast(self, num_forecast, n_samples=1000, seed=0):
-        """Draws n_samples from the chain, replays each through
-        ARIMA_forecast, returns the forecast matrix and summary stats."""
+        """Propagate posterior samples through the forecaster.
+
+        Draws ``n_samples`` samples from the chain and replays each through
+        ``ARIMA_forecast``, returning the forecast matrix and summary statistics.
+
+        Parameters
+        ----------
+        num_forecast : int
+            Number of forecast steps.
+        n_samples : int, default 1000
+            Number of posterior samples to draw.
+        seed : int, default 0
+            Seed for the per-sample forecast seeds; see ``_pack_samples``.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+
+            - ``'forecast_matrix'`` : numpy.ndarray of shape
+              ``(n_samples, num_forecast)``, one forecast per sample.
+            - ``'mean_forecast'`` : numpy.ndarray, mean over samples at each step.
+            - ``'sigma_forecast'`` : numpy.ndarray, standard deviation over samples
+              at each step.
+            - ``'packed_samples'`` : list of the packed sample tuples used.
+            - ``'forecast_func'`` : the ``fgivenx``-style forecast function used.
+        """
         packed_samples = self._pack_samples(n_samples, seed=seed)
         forecast_func = self._forecast_func(num_forecast)
         forecast_matrix = np.array([
@@ -881,18 +1534,94 @@ class PosteriorResults:
                         title_fontsize=9, show_legend=True, show_title=False,
                         cbar_labelsize=7, cbar_tick_position='right', show_colorbar=True,
                         **kwargs):
-     """
-     
+     """Plot and score an out-of-sample forecast against simple baselines.
 
-     label_fontsize, tick_labelsize, legend_fontsize, title_fontsize : font
-        sizes for axis labels, tick labels, legend text, and title,
-        matching the small-font style used elsewhere in the paper's figures
-        (defaults: 9/7/7/9).
-     show_legend, show_title : set False to omit either entirely -- e.g. the
-        manual sunspot-forecast script omits both the legend() call and any
-        title.
-     cbar_labelsize, cbar_tick_position : forwarded to the fgivenx colorbar's
-        tick_params(labelsize=...) and yaxis.set_ticks_position(...).
+     Propagates the posterior through ``compute_forecast`` and draws the resulting
+     forecast density (``fgivenx`` contours) over the forecast horizon, together
+     with climatology and persistence baselines and, if test data are available,
+     the observations. With test data, RMSE, MAE and LPD are computed for each
+     forecast, together with the RMSE-based skill of the posterior-mean forecast
+     relative to each baseline, and a summary is printed.
+
+     Parameters
+     ----------
+     overall_time : array-like
+         Time stamps of the full series (training plus any test period). If they
+         do not extend to the forecast horizon, the future stamps are
+         extrapolated at constant step.
+     overall_data : array-like
+         Full observed series (training plus test). Only used for comparison with
+         the forecast if ``upper_index`` is given.
+     num_forecast : int
+         Number of forecast steps.
+     upper_index : int, optional
+         Index in ``overall_data`` at which the forecast period starts, i.e. the
+         size of the training set. If None, no test data are assumed: the
+         forecast starts at ``len(overall_data)``, no observations are plotted,
+         and no metrics or skill scores are computed.
+     n_samples : int, default 1000
+         Number of posterior samples to propagate.
+     seed : int, default 0
+         Seed for the per-sample forecast seeds.
+     plot_nested : bool, default True
+         Whether to compute and plot the posterior-propagated forecast.
+     plot_climatology : bool, default True
+         Whether to compute and plot the climatology baseline, shaded by plus or
+         minus one standard deviation of the training data.
+     plot_persistence : bool, default True
+         Whether to compute and plot the persistence baseline, shaded likewise.
+     ax : matplotlib.axes.Axes, optional
+         Axes to draw on. If None, a new figure and axes are created.
+     label_fontsize : int, default 9
+         Font size of the axis labels.
+     tick_labelsize : int, default 7
+         Font size of the tick labels.
+     legend_fontsize : int, default 7
+         Font size of the legend text.
+     title_fontsize : int, default 9
+         Font size of the title.
+     show_legend : bool, default True
+         If False, omit the legend entirely.
+     show_title : bool, default False
+         If True, draw a title (see ``title`` under ``**kwargs``).
+     cbar_labelsize : int, default 7
+         Tick label size of the ``fgivenx`` colourbar.
+     cbar_tick_position : str, default 'right'
+         Side of the colourbar on which ticks are drawn, passed to the colourbar
+         axis' ``set_ticks_position``.
+     show_colorbar : bool, default True
+         If True, add a colourbar with the 1, 2 and 3 sigma contour levels.
+     **kwargs
+         Additional options:
+
+         - ``figsize`` : figure size when a new figure is created (default
+           ``(9, 6)``).
+         - ``xlabel``, ``ylabel`` : axis labels (defaults "Time" and "Value").
+         - ``title`` : title text, used if ``show_title`` is True (default
+           ``"ARIMA{order} forecast"``).
+         - ``ylim`` : ``(low, high)`` y-axis limits.
+
+     Returns
+     -------
+     fig : matplotlib.figure.Figure
+         The figure containing the forecast plot.
+     results : dict
+         Results, with keys ``'nested'``, ``'climatology'`` and ``'persistence'``
+         (the latter two only if plotted).
+
+         - ``'nested'`` holds the output of ``compute_forecast``.
+         - ``'climatology'`` and ``'persistence'`` each hold ``'forecast'``, the
+           baseline forecast array.
+         - With test data, each also holds ``'metrics'`` (as returned by
+           ``forecast_metrics``), and ``'nested'`` additionally holds
+           ``'skill_vs_climatology'`` and ``'skill_vs_persistence'`` for each
+           baseline that was plotted.
+
+     Notes
+     -----
+     The predictive spread used for the LPD is the per-step standard deviation over
+     posterior samples for the posterior forecast, and the standard deviation of
+     the training data for the baselines.
      """
      have_test_data = upper_index is not None
      if upper_index is None:
@@ -972,10 +1701,53 @@ class PosteriorResults:
      return fig, results
 
     def insample_forecast(self, training_time, n_samples=1000, seed=0, meas_sigma=None,ax=None,deterministic=False, **kwargs):
-        """In-sample fit + residuals: plots posterior fit lines and residual
-        lines against the training data, using fgivenx.plot_lines."""
+        """Plot the in-sample posterior fit and residuals against the training data.
+
+        Draws ``n_samples`` samples from the chain and plots their fit lines (top
+        panel) and residual lines (bottom panel) with ``fgivenx.plot_lines``, with the
+        training data overlaid on the top panel.
+
+        Parameters
+        ----------
+        training_time : array-like
+            Time stamps of the training data.
+        n_samples : int, default 1000
+            Number of posterior samples to draw.
+        seed : int, default 0
+            Seed for the per-sample forecast seeds; see ``_pack_samples``.
+        meas_sigma : array-like or float, optional
+            Measurement uncertainties, drawn as error bars on the data. No error bars
+            if None.
+        ax : sequence of matplotlib.axes.Axes, optional
+            The two axes for the fit and residual panels. If None, a new figure with
+            two vertically stacked panels sharing the x-axis is created.
+        deterministic : bool, default False
+            If True, the fit lines are computed noise-free (``sigma = 0``). Applies
+            to the fit panel only: the residual panel is always computed from the
+            noise-free fit.
+        **kwargs
+            Styling options:
+
+            - ``figsize`` : figure size for a new figure (default ``(9, 8)``).
+            - ``fit_color`` : colour of the fit lines (default "red").
+            - ``lw`` : line width of the fit lines (default 1).
+            - ``fmt``, ``alpha``, ``capsize``, ``ms`` : marker format, opacity, error
+              bar cap size and marker size of the data points (defaults "o", 1, 2
+              and 1).
+            - ``data_label`` : legend label of the data (default a LaTeX label for
+              D_t).
+            - ``xlabel``, ``ylabel`` : axis labels (defaults "Time" and "Value").
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The figure containing both panels.
+        info : dict
+            Dictionary with keys ``'packed_samples'``, ``'fit_func'`` and
+            ``'residual_func'``.
+        """
         packed_samples = self._pack_samples(n_samples, seed=seed)
-        fit_func, residual_func = self._fit_func(deterministic=deterministic), self._residual_func()
+        fit_func, residual_func = self._fit_func(deterministic=deterministic), self._residual_func(deterministic=deterministic)
 
         if ax is None:
             fig, ax = plt.subplots(2, 1, figsize=kwargs.get("figsize", (9, 8)), sharex=True,
@@ -1017,15 +1789,26 @@ class PosteriorResults:
     def posterior_point_estimate(self, estimate='mean', param_keys=None):
         """Collapse the chain to a single point estimate per parameter.
 
-        estimate : 'mean', 'median', or 'mode'.
-            'mean'/'median' use the chain's own weight-aware .mean()/.median().
-            'mode' is a per-parameter (marginal) weighted-KDE mode -- not a
-            joint/MAP estimate -- via _weighted_mode().
-        param_keys : which chain columns to summarise; defaults to this
-            object's full parameter set (ar/ma coeffs or pacf alphas, sigma,
-            mu, init_y).
+        Parameters
+        ----------
+        estimate : {'mean', 'median', 'mode'}, default 'mean'
+            Type of point estimate. ``'mean'`` and ``'median'`` use the chain's own
+            weight-aware ``.mean()`` and ``.median()``. ``'mode'`` is a
+            per-parameter (marginal) weighted-KDE mode, not a joint/MAP estimate,
+            computed with ``_weighted_mode``.
+        param_keys : list of str, optional
+            Chain columns to summarise. Defaults to this object's full parameter set
+            (ARMA coefficients or PACF alphas, ``sigma``, ``mu`` and ``init_y``).
 
-        Returns a dict {column_name: point_estimate_value}.
+        Returns
+        -------
+        dict of {str: float}
+            Mapping from column name to point-estimate value.
+
+        Raises
+        ------
+        ValueError
+            If ``estimate`` is not one of ``'mean'``, ``'median'`` or ``'mode'``.
         """
         if estimate not in ('mean', 'median', 'mode'):
             raise ValueError("estimate must be one of 'mean', 'median', 'mode'")
@@ -1043,13 +1826,35 @@ class PosteriorResults:
         return point
     
     def pooled_residuals(self, n_samples=1000, seed=0, packed_samples=None,deterministic=False):
-     """
-     Computes D_t - y_hat_t across n_samples posterior draws, returned as an
-     (n_samples, n_train) array -- the actual numbers behind the residual
-     fan plotted by insample_forecast() (which only ever passes
-     residual_func to fgivenx.plot_lines and never keeps the array).
-     No time axis needed: residual_func's x argument only exists to satisfy
-     fgivenx's calling convention and is never used in the computation itself.
+     """Compute the residuals ``D_t - y_hat_t`` across posterior samples.
+
+     Returns the array behind the residual fan drawn by ``insample_forecast``,
+     which only passes the residual function to ``fgivenx.plot_lines`` and never
+     keeps the values. No time axis is needed: the ``x`` argument of the residual
+     function exists only to satisfy ``fgivenx``'s calling convention and is not
+     used in the computation.
+
+     Parameters
+     ----------
+     n_samples : int, default 1000
+         Number of posterior samples to draw. Ignored if ``packed_samples`` is
+         given.
+     seed : int, default 0
+         Seed for the per-sample forecast seeds; see ``_pack_samples``.
+     packed_samples : list of tuple, optional
+         Pre-packed samples to reuse (e.g. the ``'packed_samples'`` entry returned
+         by ``compute_forecast`` or ``insample_forecast``) instead of drawing new
+         ones.
+     deterministic : bool, default False
+         If True, residuals are taken against the noise-free fit (``sigma = 0``).
+         Use True to reproduce the residual panel of ``insample_forecast``, which
+         always uses the noise-free fit.
+
+     Returns
+     -------
+     numpy.ndarray
+         Array of shape ``(n_samples, n_train)`` of residuals, one row per
+         sample.
      """
      packed_samples = packed_samples if packed_samples is not None else self._pack_samples(n_samples, seed=seed)
      residual_func = self._residual_func(deterministic=deterministic)
@@ -1059,25 +1864,51 @@ class PosteriorResults:
      return residual_matrix
 
     def point_estimate_forecast(self, estimate='mean', num_forecast=0, deterministic=False,point_params=None, seed=None):
-        """In-sample fit (and, optionally, a deterministic num_forecast-step
-        forward extension) from a *single* point estimate of the posterior,
-        rather than the full-chain propagation compute_forecast()/
-        outsample_forecast() do. This is the point-estimate analogue of
-        those two methods, generalizing the pattern of building a fit
-        directly from posterior_means via ARIMA_fast to any of mean/median/
-        mode, and adding an optional ARIMA_forecast extension.
+        """Compute an in-sample fit (and optional forecast) from one point estimate.
 
-        point_params : precomputed point estimate dict (e.g. from a previous
-            call to posterior_point_estimate()) to reuse instead of
-            recomputing; if None, calls posterior_point_estimate(estimate=estimate).
+        Point-estimate analogue of ``compute_forecast`` / ``outsample_forecast``:
+        rather than propagating the full chain, the posterior is collapsed to a
+        single value per parameter and the in-sample fit is built from it with
+        ``ARIMA_fast``. If ``num_forecast > 0``, a forward forecast is also generated
+        with ``ARIMA_forecast``. This generalises building a fit directly from the
+        posterior means to any of the mean, median or mode.
 
-        Returns a dict:
-            point_params : the point-estimate dict used, plus resolved 'phi'
-                and 'theta' arrays (pacf alphas already transformed)
-            y_fit        : in-sample fitted values, same length as train_data
-            residuals    : train_data - y_fit
-            y_forecast   : num_forecast-step-ahead point forecast, or None
-                if num_forecast == 0
+        Parameters
+        ----------
+        estimate : {'mean', 'median', 'mode'}, default 'mean'
+            Type of point estimate; see ``posterior_point_estimate``. Ignored if
+            ``point_params`` is given.
+        num_forecast : int, default 0
+            Number of steps to forecast beyond the training data. If 0, only the
+            in-sample fit is computed.
+        deterministic : bool, default False
+            If True, the in-sample fit is computed noise-free (``sigma = 0``). This
+            does not affect the forecast, which always uses the point-estimate
+            ``sigma`` and ``seed`` to generate its innovations.
+        point_params : dict, optional
+            Precomputed point estimate (e.g. from ``posterior_point_estimate``) to
+            reuse instead of recomputing it.
+        seed : int, optional
+            Random seed passed to ``ARIMA_fast`` and ``ARIMA_forecast``. Defaults to
+            ``self.seed``.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+
+            - ``'point_params'`` : the point-estimate dict used, plus the resolved
+              ``'phi'`` and ``'theta'`` arrays (PACF alphas already transformed).
+            - ``'y_fit'`` : numpy.ndarray of in-sample fitted values, the same length
+              as ``train_data``.
+            - ``'residuals'`` : numpy.ndarray, ``train_data`` minus ``y_fit``.
+            - ``'y_forecast'`` : numpy.ndarray of the ``num_forecast``-step forecast,
+              or None if ``num_forecast`` is 0.
+
+        Notes
+        -----
+        As side effects, ``self.sigma`` (0 if ``deterministic``, else the
+        point-estimate ``sigma``) and ``self.residuals`` are set.
         """
         point_params = point_params if point_params is not None else self.posterior_point_estimate(estimate=estimate)
         ar_keys, ma_keys, init_y_keys = self._arma_keys()
@@ -1115,16 +1946,56 @@ class PosteriorResults:
                                  ylabel='Value', xlabel='Time', figsize=None,
                                  fit_color='red', legend_loc='upper center',
                                  legend_bbox_to_anchor=(0.5, 0.55), save_path=None, **kwargs):
-        """Two-panel (data+fit / residuals) plot from a point-estimate fit --
-        top panel is the training data (errorbar if data_err is given, else
-        a scatter of '+' markers) with the point-estimate fit overlaid;
-        bottom panel is the residuals, sharing the x-axis.
+        """Plot a point-estimate fit and its residuals in two panels.
 
-        fit_result : reuse an already-computed point_estimate_forecast()
-            result instead of recomputing it; if None, calls
-            point_estimate_forecast(estimate=estimate).
-        save_path : if given, saves the figure there (PDF, tight bbox,
-            transparent background, 300 dpi) in addition to returning it.
+        The top panel shows the training data (error bars if ``data_err`` is given,
+        otherwise ``'+'`` markers) with the point-estimate fit overlaid; the bottom
+        panel shows the residuals and shares the x-axis.
+
+        Parameters
+        ----------
+        estimate : {'mean', 'median', 'mode'}, default 'mean'
+            Type of point estimate. Ignored if ``fit_result`` is given.
+        time : array-like, optional
+            x-values of the training data. Defaults to ``np.arange(len(train_data))``.
+        data_err : array-like or float, optional
+            Uncertainties on the data, drawn as error bars. If None, the data are
+            drawn as markers without error bars.
+        fit_result : dict, optional
+            Result of a previous ``point_estimate_forecast`` call to reuse instead of
+            recomputing it. If None, ``point_estimate_forecast(estimate=estimate)`` is
+            called.
+        data_label : str, default LaTeX label for D_t
+            Legend label of the data.
+        fit_label : str, default LaTeX label for the fitted values
+            Legend label of the fit.
+        ylabel : str, default "Value"
+            y-axis label of the top panel.
+        xlabel : str, default "Time"
+            x-axis label.
+        figsize : tuple of float, optional
+            Figure size in inches. Defaults to ``(fig_width, 2 * fig_height)``.
+        fit_color : str, default "red"
+            Colour of the fit line.
+        legend_loc : str, default "upper center"
+            Location of the figure legend.
+        legend_bbox_to_anchor : tuple of float, default (0.5, 0.55)
+            Anchor of the figure legend in figure coordinates.
+        save_path : str, optional
+            If given, also save the figure there as a PDF (300 dpi, tight bounding
+            box, transparent background).
+        **kwargs
+            ``fig_width`` (default 6) and ``fig_height`` (default 3), used to build
+            ``figsize`` when it is not given.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The figure.
+        ax : numpy.ndarray of matplotlib.axes.Axes
+            The two panels (data and fit, residuals).
+        fit_result : dict
+            The ``point_estimate_forecast`` result that was plotted.
         """
         fit_result = fit_result if fit_result is not None else self.point_estimate_forecast(estimate=estimate)
         y_fit, residuals = fit_result['y_fit'], fit_result['residuals']
@@ -1166,24 +2037,68 @@ class PosteriorResults:
                      true_values=None, xlim=None, figsize=None, facecolor='w',
                      upper=False, tick_labelsize=7, legend=True,
                      legend_loc='lower center', save_path=None, **kwargs):
-        """2D posterior corner plot via anesthetic's make_2d_axes/plot_2d.
+        """Draw a 2D posterior corner plot with ``anesthetic``.
 
-        params defaults to this object's AR/MA coefficients (or pacf alphas)
-        plus sigma and mu -- NOT init_y, which is a nuisance parameter
-        rather than a model parameter of interest by default; pass params=
-        explicitly to include it, or to plot a different subset entirely.
-        include_prior overlays self.chain.prior() (only available on a live
-        NestedSamples chain, not one reloaded from certain older CSVs).
-        true_values, if given, is a dict {param: value} (a subset of params
-        is fine) drawn as black dashed reference lines, with a legend entry
-        added via a proxy line on the bottom-left panel.
-        xlim, if given, is a dict {param: (low, high)} applied to that
-        param's column of panels.
+        Parameters
+        ----------
+        params : list of str, optional
+            Parameters to plot. Defaults to the AR/MA coefficients (or PACF alphas)
+            plus ``sigma`` and ``mu``. ``init_y`` is left out by default because it
+            is a nuisance parameter rather than a model parameter of interest; pass
+            ``params`` explicitly to include it or to plot a different subset.
+        include_prior : bool, default False
+            If True, overlay the prior from ``self.chain.prior()``. Only available
+            on a live ``NestedSamples`` chain, not on one reloaded from certain older
+            CSVs.
+        prior_kwargs : dict, optional
+            Extra options for plotting the prior, forwarded to ``plot_2d``. Defaults
+            to ``alpha=0.9``, ``color='grey'``, ``kinds=posterior_kinds`` and
+            ``label='prior'``.
+        posterior_color : str, default "tomato"
+            Colour of the posterior.
+        posterior_kinds : str or dict, default "kde"
+            Plot kinds passed to ``plot_2d`` for the posterior (and, by default, the
+            prior).
+        true_values : dict, optional
+            Mapping ``{param: value}`` (a subset of ``params`` is fine) drawn as
+            black dashed reference lines. A "true values" legend entry is added via a
+            proxy line on the bottom-left panel if the first parameter is included.
+        xlim : dict, optional
+            Mapping ``{param: (low, high)}`` of x-limits applied to that parameter's
+            column of panels.
+        figsize : tuple of float, optional
+            Figure size in inches. Defaults to ``(fig_width, 1.5 * fig_height)``.
+        facecolor : str, default "w"
+            Figure face colour.
+        upper : bool, default False
+            Whether to create the 2D panels above the diagonal (passed to
+            ``make_2d_axes``).
+        tick_labelsize : int, default 7
+            Font size of the tick labels.
+        legend : bool, default True
+            Whether to draw the "true values" legend.
+        legend_loc : str, default "lower center"
+            Location of that legend.
+        save_path : str, optional
+            If given, also save the figure there as a PDF (300 dpi, tight bounding
+            box, transparent background).
+        **kwargs
+            ``fig_width`` (default 6) and ``fig_height`` (default 4), used to build
+            ``figsize`` when it is not given.
 
-        Note: the true_values/xlim panel-indexing here mirrors anesthetic's
-        lower-triangle (upper=False) grid layout; if you pass upper=True or
-        a different anesthetic version changes that indexing, you may need
-        to adjust which panel these are applied to.
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The figure.
+        axes : anesthetic.plot.AxesDataFrame
+            The grid of panel axes.
+
+        Notes
+        -----
+        The panel indexing used for ``true_values`` and ``xlim`` mirrors
+        ``anesthetic``'s lower-triangle (``upper=False``) grid layout. If you pass
+        ``upper=True``, or a different ``anesthetic`` version changes that indexing,
+        you may need to adjust which panels these are applied to.
         """
         if params is None:
             ar_keys, ma_keys, _ = self._arma_keys()
