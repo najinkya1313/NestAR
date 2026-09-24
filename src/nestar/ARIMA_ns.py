@@ -94,6 +94,9 @@ def loglikelihood(data, order, seed, meas_sigma=None, custom=False, custom_llk=N
         and returning the corresponding log-likelihood.
     """
     p, d, q = order
+    phi_keys = [f'phi_{i+1}' for i in range(p)]
+    theta_keys = [f'theta_{j+1}' for j in range(q)]
+    init_y_keys = [f'init_y_{k+1}' for k in range(p)]
     data = jnp.asarray(data)
     n = data.shape[0]
     if meas_sigma is None:

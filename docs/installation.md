@@ -4,7 +4,7 @@
 
 NestAR requires Python 3.10 or later.
 
-The package uses [JAX](https://docs.jax.dev/) for numerical computation and [BlackJAX](https://github.com/blackjax-devs/blackjax) for nested sampling. Additional dependencies are installed automatically when NestAR is installed.
+The package uses [JAX](https://docs.jax.dev/) for numerical computation and [BlackJAX](https://github.com/blackjax-devs/blackjax) for nested sampling. NestAR currently uses a specific historical BlackJAX version because later releases changed the nested-sampling API used by the package. Additional dependencies are installed automatically when NestAR is installed.
 
 ## Install from GitHub
 
@@ -19,6 +19,12 @@ Install NestAR and its dependencies:
 
 ```bash
 python -m pip install .
+```
+
+For Jupyter notebook functionality, including the progress bars used by some plotting routines, install the optional notebook dependencies:
+
+```bash
+python -m pip install "nestar[notebook]"
 ```
 
 For development, an editable installation can be used:
@@ -53,7 +59,7 @@ The default installation is suitable for CPU-based computation. Users wishing to
 
 The example notebooks accompanying the paper are provided in the `examples/` directory.
 
-After installing NestAR, launch Jupyter from the repository root:
+After installing NestAR and, for notebook use, the optional notebook dependencies, launch Jupyter from the repository root:
 
 ```bash
 jupyter notebook

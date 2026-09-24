@@ -15,14 +15,17 @@ dependencies = [
     "pandas",
     "matplotlib",
     "jax",
-    "blackjax",
+    "blackjax @ git+https://github.com/handley-lab/blackjax.git@95e93ed93e726b95143b2f4a9582888621625f52",
     "anesthetic",
     "tqdm",
     "fgivenx",
     "statsmodels",
-    "lightkurve",
-    "astropy",
     "pmdarima"
+]
+
+[project.optional-dependencies]
+notebook = [
+    "ipywidgets",
 ]
 
 [tool.setuptools.packages.find]
