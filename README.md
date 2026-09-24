@@ -69,7 +69,7 @@ Full documentation, including the API reference, examples, and detailed usage in
 
 ## Citation
 
-If you use NestAR in your research, please cite the accompanying paper:
+If you use NestAR in your research or work, please cite the accompanying paper:
 
 > A. J. Naik & W. Handley, *Nested Sampling for ARIMA Model Selection in Astronomical Time-Series Analysis*.
 
