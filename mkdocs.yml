@@ -6,14 +6,11 @@ site_url: !ENV READTHEDOCS_CANONICAL_URL
 
 theme:
   name: readthedocs
-  logo: assets/NestAR_compact_logo.png 
+  logo: assets/NestAR_compact_logo.png
   favicon: assets/NestAR_compact_logo.png
-  features:
-    - navigation.tabs
-    - navigation.sections
-    - navigation.top
-    - search.highlight
-    - content.code.copy
+  collapse_navigation: true
+  navigation_depth: 4
+  sticky_navigation: true
 
 plugins:
   - search
