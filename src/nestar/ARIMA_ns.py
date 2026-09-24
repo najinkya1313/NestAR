@@ -92,7 +92,7 @@ def loglikelihood(data, order, seed, meas_sigma=None, custom=False, custom_llk=N
         A log-likelihood function accepting a parameter dictionary
         and returning the corresponding log-likelihood.
     """
-
+    p, d, q = order
     data = jnp.asarray(data)
     n = data.shape[0]
     if meas_sigma is None:
