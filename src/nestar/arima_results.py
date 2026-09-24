@@ -49,13 +49,34 @@ from .ARIMA_ns import pacf_to_arma
 
 def num_arima_params(order, include_mean=True, include_scale=True):
     """
-    Number of free parameters k for an ARIMA(p, d, q) model, for use in BIC.
+    Count the number of free parameters in an ARIMA model.
 
-    By default this counts the p AR coefficients + q MA coefficients, plus one
-    parameter for the long-term mean (mu) and one for the noise scale (sigma),
-    since that's what ARIMA_Nested_Sampler appears to fit. Differencing order
-    d does not add a free parameter.
-    
+    By default, the parameter count includes the ``p`` AR coefficients
+    and ``q`` MA coefficients, along with one parameter for the
+    long-term mean ``mu`` and one parameter for the noise scale
+    ``sigma``. This matches the parameterisation used by
+    :class:`ARIMA_Nested_Sampler`.
+
+    The differencing order ``d`` does not contribute an additional
+    free parameter.
+
+    Parameters
+    ----------
+    order : tuple of int
+        ARIMA model order ``(p, d, q)``, where ``p`` is the
+        autoregressive order, ``d`` is the differencing order, and
+        ``q`` is the moving-average order.
+    include_mean : bool, optional
+        If ``True``, include the long-term mean ``mu`` in the parameter
+        count. Defaults to ``True``.
+    include_scale : bool, optional
+        If ``True``, include the noise scale ``sigma`` in the parameter
+        count. Defaults to ``True``.
+
+    Returns
+    -------
+    int
+        Number of free parameters in the ARIMA model.
     """
     p, d, q = order
     k = 2 * p + q
@@ -67,14 +88,30 @@ def num_arima_params(order, include_mean=True, include_scale=True):
 
 
 def compute_bic(max_loglikelihood, num_params, num_data):
-    """BIC = k*ln(n) - 2*ln(L_max).
+    """
+    Compute the Bayesian Information Criterion (BIC).
 
-    Arguments:
-    max_loglikelihood : the maximum log-likelihood attained by the model (a
-        float, NOT an index -- see note in ARIMAModelComparison.run about a
-        bug this fixes).
-    num_params : number of free parameters k (see num_arima_params).
-    num_data : number of data points n used to fit the model.
+    The BIC is defined as
+
+    ``BIC = k * ln(n) - 2 * ln(L_max)``,
+
+    where ``k`` is the number of free parameters, ``n`` is the number
+    of data points, and ``L_max`` is the maximum likelihood attained
+    by the model.
+
+    Parameters
+    ----------
+    max_loglikelihood : float
+        Maximum log-likelihood attained by the model. 
+    num_params : int
+        Number of free parameters ``k``. 
+    num_data : int
+        Number of data points ``n`` used to fit the model.
+
+    Returns
+    -------
+    float
+        Bayesian Information Criterion for the model.
     """
     return num_params * np.log(num_data) - 2 * max_loglikelihood
 
@@ -85,15 +122,9 @@ def compute_bic(max_loglikelihood, num_params, num_data):
 
 def compute_log_V_boost(V):
     """-log(V), the evidence boost from renormalising the rejection-sampled
-    prior onto the stationary/invertible region S (see reviewer item 2).
-    Grows with p+q as V (the rejection-sampling acceptance rate) shrinks.
+    prior onto the stationary/invertible region S.
 
-    Derived purely from V, so it is NOT stored as its own column in the
-    evidence file -- it's recomputed here on load, from whatever V column
-    is present. Returns None if V is None. A V of exactly 0 (never accepted
-    a single point -- shouldn't happen in practice for a converged run) maps
-    to +inf rather than raising, so a degenerate cell doesn't crash a whole
-    grid's plotting.
+    This will be zero for the PACF priors.
     """
     if V is None:
         return None
@@ -138,45 +169,70 @@ def _parse_line(line):
 
 
 def load_evidence_file(file_name, check_normalization=True, atol=1e-6):
-    """Read back the results written by ARIMA_Model_Comparison.run()
-
-    Parameters
-    ----------
-    file_name : string
-    The filepath of the evidence file generated from ARIMA_model_comparison.run()
-    
-    check_normalization : bool
-    Set to true by default. Sanity checks that the calculated logPs are normalized (sum to one).
-
-    atol : float or int
-    The tolerance level for the deviation of normalization from 1. Set to 1e-6 by default.
-    
-
-    Returns
-    -------
-    dictionary with keys:
-    
-        orders                   : list of (p, d, q) tuples, or None if not present
-        evidences                : np.ndarray of log evidences
-        evidence_err              : np.ndarray of log evidence errors
-        log_posteriors            : np.ndarray of normalized log posterior probabilities
-        V                         : np.ndarray of rejection-sampling acceptance rates, or None
-        max_loglikelihood         : np.ndarray of per-model max log-likelihoods, or None
-        BIC                       : np.ndarray of per-model BIC values, or None
-        d0_occam                  : np.ndarray of per-model D0 Occam-factor totals, or None
-        log_V_boost                : np.ndarray of -log(V) per model, or None (derived from V)
-        net_prior_volume_effect   : np.ndarray of log_V_boost + d0_occam, or None
-            (read from a NetPriorVolume column if present; else recomputed
-            from log_V_boost + d0_occam if both are available; else None)
-
-    Note
-    -------
-    per-parameter D0 detail (which init_y_i contributed how much) is
-    NOT persisted to the text file -- only the per-model total. That detail
-    only exists on a live ARIMA_model_comparison.d0_per_param right after
-    .run(), not after a reload via .load_evidence_file().
-    
     """
+Read back the results written by ``ARIMA_Model_Comparison.run()``.
+
+The function reads an evidence file and extracts whichever fields are
+present. This provides backward compatibility with older evidence files
+that contain only the ``Order``, ``Seed``, ``Evidence``, and ``Error``
+columns. Missing fields are returned as ``None``.
+
+If the file does not contain a ``Posterior`` column, the log posterior
+probabilities are recomputed from the ``Evidence`` column. The
+``log_V_boost`` quantity is never read directly from the file; it is
+always rederived from ``V`` using ``compute_log_V_boost()``.
+
+Parameters
+----------
+file_name : str
+    Path to the evidence file generated by
+    ``ARIMA_Model_Comparison.run()``.
+check_normalization : bool, optional
+    If ``True``, check that the calculated log posterior probabilities
+    are normalized. Defaults to ``True``.
+atol : float or int, optional
+    Tolerance for the deviation of the posterior normalization from 1.
+    Defaults to ``1e-6``.
+
+Returns
+-------
+dict
+    Dictionary containing the following entries:
+
+    - ``orders`` : list of tuple or None
+        List of ``(p, d, q)`` model orders, or ``None`` if not present.
+    - ``evidences`` : np.ndarray
+        Log Bayesian evidences for each model.
+    - ``evidence_err`` : np.ndarray
+        Uncertainties in the log Bayesian evidences.
+    - ``log_posteriors`` : np.ndarray
+        Normalized log posterior probabilities for each model.
+    - ``V`` : np.ndarray or None
+        Rejection-sampling acceptance rates.
+    - ``max_loglikelihood`` : np.ndarray or None
+        Maximum log-likelihood attained by each model.
+    - ``BIC`` : np.ndarray or None
+        Bayesian Information Criterion value for each model.
+    - ``d0_occam`` : np.ndarray or None
+        Per-model total D0 Occam-factor contribution.
+    - ``log_V_boost`` : np.ndarray or None
+        ``-log(V)`` for each model, derived from ``V`` rather than read
+        directly from the file.
+    - ``net_prior_volume_effect`` : np.ndarray or None
+        Sum of ``log_V_boost`` and ``d0_occam``. If a
+        ``NetPriorVolume`` column is present, its values are used;
+        otherwise the quantity is recomputed when both contributing
+        terms are available.
+
+Notes
+-----
+Per-parameter D0 detail, specifying how much each ``init_y_i`` 
+contributed, is not persisted to the text file; only the per-model
+total is stored. This detail is available only on a live
+``ARIMA_Model_Comparison.d0_per_param`` attribute immediately after
+``run()`` and is not available after reloading with
+``load_evidence_file()``.
+"""
     records = []
     with open(file_name, "r") as f:
         for line in f:
@@ -240,7 +296,27 @@ def load_evidence_file(file_name, check_normalization=True, atol=1e-6):
 
 
 def check_posteriors_sum_to_one(log_posteriors, atol=1e-6):
-    """Warn (never raise) if exp(log_posteriors) doesn't sum to ~1."""
+    """
+    Check whether model posterior probabilities sum to approximately one.
+
+    The function computes the sum of the posterior probabilities from
+    their logarithms and issues a warning if the result is not within
+    the specified absolute tolerance of one. It never raises an
+    exception because of a normalization mismatch.
+
+    Parameters
+    ----------
+    log_posteriors : array-like
+        Log posterior probabilities of the models.
+    atol : float, optional
+        Absolute tolerance used when checking whether the posterior
+        probabilities sum to one. Defaults to ``1e-6``.
+
+    Returns
+    -------
+    float
+        Sum of the model posterior probabilities.
+    """
     total = float(np.sum(np.exp(log_posteriors)))
     if not np.isclose(total, 1.0, atol=atol):
         warnings.warn(
