@@ -6,44 +6,44 @@ from functools import partial
 @partial(jax.jit, static_argnums=(1,))        
 def ARIMA_fast(data,order,sigma,mu, phi,theta,init_y,seed):
     """
-    Evaluate a non-seasonal ARIMA model using JAX.
+Evaluate a non-seasonal ARIMA model using JAX.
 
-    The function applies the specified differencing operation, evaluates
-    the ARMA recurrence using the supplied autoregressive and moving-average
-    coefficients, and optionally adds Gaussian process noise. The
-    computation is compiled with JAX using the ARIMA order as a static
-    argument.
+The function applies the specified differencing operation, evaluates
+the ARMA recurrence using the supplied autoregressive and moving-average
+coefficients, and optionally adds Gaussian process noise. The
+computation is compiled with JAX using the ARIMA order as a static
+argument.
 
-    Parameters
-    ----------
-    data : array-like
-        One-dimensional input time series.
-    order : tuple of int
-        ARIMA model order ``(p, d, q)``, where ``p`` is the autoregressive
-        order, ``d`` is the differencing order, and ``q`` is the
-        moving-average order.
-    sigma : float
-        Standard deviation of the Gaussian process noise added to the
-        model output. If zero, no noise is added.
-    mu : float
-        Unconditional mean of the ARIMA process.
-    phi : array-like
-        Autoregressive coefficients.
-    theta : array-like
-        Moving-average coefficients.
-    init_y : array-like
-        Initial values used for the autoregressive recurrence. The number
-        of values should correspond to the AR order ``p``.
-    seed : int
-        Random seed used to generate the process noise.
+Parameters
+----------
+data : array-like
+    One-dimensional input time series.
+order : tuple of int
+    ARIMA model order ``(p, d, q)``, where ``p`` is the autoregressive
+    order, ``d`` is the differencing order, and ``q`` is the
+    moving-average order.
+sigma : float
+    Standard deviation of the Gaussian process noise added to the
+    model output. If zero, no noise is added.
+mu : float
+    Unconditional mean of the ARIMA process.
+phi : array-like
+    Autoregressive coefficients.
+theta : array-like
+    Moving-average coefficients.
+init_y : array-like
+    Initial values used for the autoregressive recurrence. The number
+    of values should correspond to the AR order ``p``.
+seed : int
+    Random seed used to generate the process noise.
 
-    Returns
-    -------
-    jax.Array
-        Modelled time series with the same length as the input data.
-        When ``sigma`` is non-zero, Gaussian process noise is included
-        in the returned series.
-    """
+Returns
+-------
+jax.Array
+    Modelled time series with the same length as the input data.
+    When ``sigma`` is non-zero, Gaussian process noise is included
+    in the returned series.
+"""
     key = jax.random.PRNGKey(seed)
     key,arima_key = jax.random.split(key)
     p, d, q = order           
