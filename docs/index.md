@@ -1,4 +1,4 @@
-![NestAR](assets/forecast_image.pdf)
+![NestAR](assets/forecast_image.png)
 
 ## Nested sampling for ARIMA model selection
 
