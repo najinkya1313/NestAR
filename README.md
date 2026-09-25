@@ -4,13 +4,14 @@
 
 > **Bayesian ARIMA model selection for astronomical time-series analysis using Nested Sampling.**
 
+[![Documentation](https://img.shields.io/badge/docs-Read%20the%20Docs-e7b12a.svg)](https://nestar.readthedocs.io/)
 [![arXiv](https://img.shields.io/badge/arXiv-2512.01929-b31b1b.svg)](https://arxiv.org/abs/2512.01929)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
 ## Overview
 
-**NestAR** combines **Nested Sampling** with **ARIMA** (**A**uto**R**egressive **I**ntegrated **M**oving **A**verage) models for Bayesian model selection. 
+**NestAR** combines **Nested Sampling** with **ARIMA** (**A**uto**R**egressive **I**ntegrated **M**oving **A**verage) models for Bayesian model selection.
 
 It provides a rigorous alternative to maximum-likelihood based selection and fitting of ARIMA models, such as using the Bayesian or Akaike Information Criterion.
 
@@ -57,9 +58,7 @@ model = ARIMA_Nested_Sampler(
 )
 
 model.summary()
-
 ```
-
 
 ## Documentation
 
