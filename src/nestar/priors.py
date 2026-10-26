@@ -239,7 +239,6 @@ def normal_prior(rng_key,num_live,prior_params,order):
    total_drawn += batch_size
    total_accepted += len(new_particles_filtered['sigma'])
    V = total_accepted/total_drawn
-   print(f"Acceptance rate: {V:.4f}, Total drawn: {total_drawn}")
    for key,vals in new_particles_filtered.items():
      new_arr = jnp.concatenate([particles[key],vals])
      particles.update({key:new_arr})
