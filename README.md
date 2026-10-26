@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="nestar_logo.png" alt="NestAR banner" width="100%">
+  <img src="docs/assets/nestar_logo.png" alt="NestAR banner" width="100%">
 </p>
 
 > **Bayesian ARIMA model selection for astronomical time-series analysis using Nested Sampling.**
