@@ -130,7 +130,7 @@ def loglikelihood(data, order, seed, meas_sigma=None, custom=False, custom_llk=N
         return llk
 
 
-def pacf_loglikelihood(data:array, order:tuple, seed:int, meas_sigma=None):
+def pacf_loglikelihood(data:arr, order:tuple, seed:int, meas_sigma=None):
     """
     Construct a Gaussian log-likelihood function using PACF parameters.
 
