@@ -1,20 +1,3 @@
-"""Prior distributions for nested-sampling fits of ARIMA models.
-
-Provides two priors over the parameters of an ARMA(p, q) model with unknown
-noise scale ``sigma``, mean ``mu`` and initial values ``init_y``:
-
-- ``normal_prior``: independent Gaussian priors on the AR (``phi``) and MA
-  (``theta``) coefficients, restricted by rejection sampling to the region in
-  which the model is stationary and invertible.
-- ``prior_pacf_uniform``: Uniform(-1, 1) priors on the partial-autocorrelation
-  (PACF) parametrisation of the coefficients, which is stationary and
-  invertible by construction, so no rejection sampling is needed.
-
-Both return a dictionary of ``num_live`` initial particles together with a
-function that evaluates the log prior, for use with the ``blackjax`` nested
-sampler.
-"""
-
 import jax
 import jax.numpy as jnp
 from blackjax.ns.utils import uniform_prior
@@ -22,68 +5,6 @@ from blackjax.ns.utils import uniform_prior
 ##Normal prior distributions for the ARIMA model parameters. The code implements a constrained prior distribution to get stationary and invertible ARMA coefficient parameters.
 
 def normal_prior(rng_key,num_live,prior_params,order):
- """Constrained Gaussian prior for the parameters of an ARMA model.
-
- Draws ``num_live`` particles from independent Gaussian priors on the AR
- coefficients ``phi_i`` and MA coefficients ``theta_j``, a truncated Gaussian
- prior on the noise scale ``sigma``, and Gaussian priors on the mean ``mu`` and
- the initial values ``init_y_i``. The particles are restricted, by rejection
- sampling, to the region in which the ARMA process is stationary and
- invertible, i.e. where all roots of the AR polynomial
- ``1 - phi_1 z - ... - phi_p z^p`` and of the MA polynomial
- ``1 + theta_1 z + ... + theta_q z^q`` lie outside the unit circle.
-
- Parameters
- ----------
- rng_key : jax.Array
-     JAX PRNG key used to draw the particles.
- num_live : int
-     Number of particles to return.
- prior_params : dict
-     Mapping from parameter name to a dict with keys ``'mean'`` and
-     ``'scale'`` (the mean and standard deviation of that parameter's
-     Gaussian). It must contain entries for ``'phi_1'`` ... ``'phi_p'``,
-     ``'theta_1'`` ... ``'theta_q'``, ``'sigma'``, ``'mu'`` and, if ``p > 0``,
-     ``'init_y_1'`` ... ``'init_y_p'``.
- order : tuple of int
-     ARIMA order ``(p, d, q)``. Only ``p`` and ``q`` are used.
-
- Returns
- -------
- particles : dict of {str: jax.Array}
-     The ``num_live`` accepted particles. Each entry has shape
-     ``(num_live,)``, with keys ``phi_i``, ``theta_j``, ``sigma``, ``mu`` and
-     ``init_y_i``.
- logprior_fn : callable
-     Function ``logprior_fn(params)`` that takes a dict of parameter values
-     (a single particle) and returns the scalar log prior density, which is
-     ``-inf`` outside the stationary and invertible region.
- V : float
-     Acceptance rate of the rejection sampling: the fraction of all drawn
-     particles that lie in the stationary and invertible region.
-
- Notes
- -----
- Particles are drawn in batches of ``1000 * num_live``. Further batches are
- drawn, printing the running acceptance rate, until at least ``num_live``
- particles have been accepted, and the first ``num_live`` are returned.
-
- Inside the valid region, ``logprior_fn`` is the product of the unrestricted
- densities; it is not renormalised over that region. The acceptance rate
- ``V`` is an estimate of the prior mass of the region and can be used to
- correct for this.
-
- When drawing particles, all ARMA coefficients are sampled as zero-mean
- Gaussians with the scale of the first coefficient, and all ``init_y_i`` with
- the mean and scale of ``init_y_1``, whereas ``logprior_fn`` uses each
- parameter's own mean and scale. For the particles to follow ``logprior_fn``,
- the ARMA coefficients should therefore share a zero mean and a common scale,
- and the ``init_y_i`` a common mean and scale.
-
- The lower truncation bound ``1e-5`` of the ``sigma`` prior is applied in
- standardised units (as in ``scipy.stats.truncnorm``), so the effective lower
- bound on ``sigma`` is approximately its prior mean rather than zero.
- """
  p,d,q = order
  phi_names = [f"phi_{i+1}" for i in range(p)]
  theta_names = [f"theta_{j+1}" for j in range(q)]
@@ -141,157 +62,57 @@ def normal_prior(rng_key,num_live,prior_params,order):
   
 
 ##---------------------------------------------------Particle sampler-----------------------------------------------:
- @jax.jit
- def prior_sample(rng_key):
-  
-  coeff_keys = jax.random.split(rng_key, p+q) ##these are random keys for the ARMA coeffs
-  param_labels = [label for label in prior_params_modsigma.keys()]
-  phi_labels = param_labels[0:p]
-  theta_labels = param_labels[p:p+q]
-  params = {}
-  particles_all = overall_scale*jnp.array([jax.random.normal(rng_key) for rng_key in coeff_keys]) ##coeff particles
- 
 
-  rng_key,sigma_key = jax.random.split(rng_key) ##random keys for sigma particles
-  sigma_particle = scale_sigma*(jax.random.truncated_normal(sigma_key,1e-5,jnp.inf)) + mean_sigma
+ def valid_coeff_block(rng_key,n_needed,k,sign,label):
+  if k == 0:
+   return jnp.zeros((n_needed,0)),1.0
 
-  rng_key,mu_key = jax.random.split(rng_key) ##random keys for mu particles
-  mu_particle = mu_mean + mu_scale*(jax.random.normal(mu_key))
+  def is_valid(x):
+   poly = jnp.concatenate([sign*jnp.flip(x),jnp.ones(1)])
+   return jnp.all(jnp.abs(jnp.roots(poly,strip_zeros=False))>1)
+  valid_mask = jax.jit(jax.vmap(is_valid))
 
-  init_keys = jax.random.split(rng_key,p)
-  if p:
-   init_y_particles = init_y_scale * jnp.array([jax.random.normal(init_y_key) for init_y_key in init_keys[0:p]]) + init_y_mean
- 
-  
-
-  
- 
- #Roots calculation
-  phi_particles = particles_all[0:p]
-  theta_particles = particles_all[p:p+q]
-  theta_particles_flipped = jnp.flip(theta_particles)
-  phi_particles_flipped = jnp.flip(phi_particles)
-  const = jnp.ones(1)
-  phi_poly = jnp.concatenate([-phi_particles_flipped,const])
-  theta_poly = jnp.concatenate([theta_particles_flipped,const])
-  roots_phi = jnp.roots(phi_poly,strip_zeros=False)
-  roots_theta = jnp.roots(theta_poly,strip_zeros=False)
-  roots = jnp.concatenate([roots_phi,roots_theta])
-
-  def valid_point(roots):
-    for phi_label,phi_particle in zip(phi_labels,phi_particles):
-      params.update({phi_label:phi_particle})
-    for theta_label,theta_particle in zip(theta_labels,theta_particles):
-      params.update({theta_label:theta_particle})
-    params.update({'sigma':sigma_particle})
-    params.update({'mu':mu_particle})
-    if p:
-     for init_y_label,init_y_particle in zip(init_y_names,init_y_particles):
-       params.update({init_y_label:init_y_particle})
-   
-    return params
-  
-  def invalid_point(roots):
-    for phi_label,phi_particle in zip(phi_labels,phi_particles):
-      params.update({phi_label:0.})
-    for theta_label,theta_particle in zip(theta_labels,theta_particles):
-      params.update({theta_label:0.})
-    params.update({'sigma':0.})
-    params.update({'mu':0.})
-    if p:
-     for init_y_label,init_y_particle in zip(init_y_names,init_y_particles):
-       params.update({init_y_label:0.})
-
-    return params
-  
-  filtered_params = jax.lax.cond(jnp.all(abs(roots)>1),valid_point,invalid_point,roots)
-  initlogprior = logprior_fn(filtered_params)
-  
-  return filtered_params,initlogprior
- ##--------------------------------------------------------------------------------------------------------
-
- 
- ##--------------------------------------Filter to only accept valid particles-------------------------------
- def particles_filter(unfiltered_particles,initlogprior):
-   
-   
-   mask = initlogprior != -jnp.inf
-   
-   for key,vals in unfiltered_particles.items():
-     unfiltered_particles.update({key:vals[mask]})
-   
-   return unfiltered_particles
-
- batch_size = num_live*1000
- particle_keys = jax.random.split(rng_key,batch_size)
- unfiltered_particles,unfilteredlogprior = jax.vmap(prior_sample)(particle_keys)
- particles = particles_filter(unfiltered_particles,unfilteredlogprior)
- total_drawn = batch_size
- total_accepted = len(particles['sigma'])
- V = total_accepted/total_drawn
- 
- ##------------------While loop to keep drawing samples until num_live reached --------------------------------
- while len(particles['sigma'])<num_live:
+  batch_size = n_needed*1000
+  kept = []
+  total_drawn = 0
+  total_accepted = 0
+  while total_accepted < n_needed:
    rng_key,sample_key = jax.random.split(rng_key)
-   sample_particle_keys = jax.random.split(sample_key,batch_size)
-   new_particles,newlogprior = jax.vmap(prior_sample)(sample_particle_keys)
-   new_particles_filtered = particles_filter(new_particles,newlogprior)
+   x = overall_scale*jax.random.normal(sample_key,(batch_size,k))
+   x_valid = x[valid_mask(x)]
    total_drawn += batch_size
-   total_accepted += len(new_particles_filtered['sigma'])
-   V = total_accepted/total_drawn
-   for key,vals in new_particles_filtered.items():
-     new_arr = jnp.concatenate([particles[key],vals])
-     particles.update({key:new_arr})
+   total_accepted += len(x_valid)
+   kept.append(x_valid)
    
- particles = {label:value[:num_live] for label,value in particles.items()}
+  return jnp.concatenate(kept)[:n_needed],total_accepted/total_drawn
+
+ rng_key,phi_key,theta_key,rest_key = jax.random.split(rng_key,4)
+ phi_block,V_ar = valid_coeff_block(phi_key,num_live,p,-1.0,'AR')
+ theta_block,V_ma = valid_coeff_block(theta_key,num_live,q,1.0,'MA')
+ V = V_ar*V_ma
+
+ sigma_key,mu_key,init_key = jax.random.split(rest_key,3)
+ sigma_particles = scale_sigma*jax.random.truncated_normal(sigma_key,1e-5,jnp.inf,shape=(num_live,)) + mean_sigma
+ mu_particles = mu_mean + mu_scale*jax.random.normal(mu_key,(num_live,))
+
+ particles = {}
+ for i,label in enumerate(phi_names):
+  particles[label] = phi_block[:,i]
+ for j,label in enumerate(theta_names):
+  particles[label] = theta_block[:,j]
+ particles['sigma'] = sigma_particles
+ particles['mu'] = mu_particles
+ if p:
+  init_y_particles = init_y_scale*jax.random.normal(init_key,(num_live,p)) + init_y_mean
+  for i,label in enumerate(init_y_names):
+   particles[label] = init_y_particles[:,i]
    
  return particles,logprior_fn,V
 
 def prior_pacf_uniform(rng_key, num_live, prior_params, order):
-    """Uniform prior on the PACF-parametrised ARMA coefficients.
-
-    The AR and MA coefficients are parametrised by partial autocorrelations
-    ``alpha_ar_i`` (``i = 1, ..., p``) and ``alpha_ma_j`` (``j = 1, ..., q``),
-    each with a Uniform(-1, 1) prior. Every point in this box corresponds to a
-    stationary and invertible ARMA model, so no rejection sampling is needed. The
-    noise scale ``sigma``, the mean ``mu`` and the initial values ``init_y_i``
-    have the same priors as in ``normal_prior``.
-
-    Parameters
-    ----------
-    rng_key : jax.Array
-        JAX PRNG key used to draw the particles.
-    num_live : int
-        Number of particles to return.
-    prior_params : dict
-        Mapping from parameter name to a dict with keys ``'mean'`` and
-        ``'scale'``. Only the entries ``'sigma'``, ``'mu'`` and, if ``p > 0``,
-        ``'init_y_1'`` are read; all ``init_y_i`` share the mean and scale of
-        ``init_y_1``. Entries for the ARMA coefficients are not used, since those
-        have the uniform prior.
-    order : tuple of int
-        ARIMA order ``(p, d, q)``. Only ``p`` and ``q`` are used.
-
-    Returns
-    -------
-    particles : dict of {str: jax.Array}
-        The ``num_live`` particles. Each entry has shape ``(num_live,)``, with
-        keys ``alpha_ar_i``, ``alpha_ma_j``, ``sigma``, ``mu`` and ``init_y_i``.
-    logprior_fn : callable
-        Function ``logprior_fn(params)`` that takes a dict of parameter values
-        (a single particle) and returns the scalar log prior density.
-
-    Notes
-    -----
-    Unlike ``normal_prior``, this returns only ``(particles, logprior_fn)``, with
-    no acceptance rate, because there is no rejection sampling.
-
-    The coefficient particles and their log prior come from
-    ``blackjax.ns.utils.uniform_prior``.
-
-    The lower truncation bound ``1e-5`` of the ``sigma`` prior is applied in
-    standardised units (as in ``scipy.stats.truncnorm``), so the effective lower
-    bound on ``sigma`` is approximately its prior mean rather than zero.
+    """
+    Uniform(-1,1) prior on the PACF-parametrised ARMA coefficients
+    (alpha_ar_i, alpha_ma_j).
     """
     p, d, q = order
 
