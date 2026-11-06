@@ -7,8 +7,8 @@ extra_css:
 
 theme:
   name: readthedocs
-  logo: assets/NestAR_compact_logo.png
-  favicon: assets/NestAR_compact_logo.png
+  logo: assets/NestAR_compact_logo.jpg
+  favicon: assets/NestAR_compact_logo.jpg
   collapse_navigation: true
   navigation_depth: 4
   sticky_navigation: true
