@@ -119,6 +119,8 @@ class ARIMA_model_comparison:
                  include_mean_param=True, include_scale_param=True,meas_sigma=None,
                  maximum_likelihood=False, mle_top_k=10, mle_n_random=0, mle_maxiter=500):
         """
+        Parameters
+        ----------
         data : time series data to be analyzed
         max_p : max AR order of the grid
         max_q : max MA order of the grid
